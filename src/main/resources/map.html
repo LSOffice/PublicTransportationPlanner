@@ -595,6 +595,15 @@
               "#1f78b4",
               "#e31a1c",
             ];
+
+            // Line type colors (overrides default)
+            const lineTypeColors = {
+              RADIAL_TRUNK: "#d62728", // red
+              CORE_DISTRIBUTOR: "#ff7f0e", // orange
+              ORBITAL: "#2ca02c", // green
+              NOT_METRO: "#cccccc", // gray (unlikely)
+            };
+
             const created = {};
             const allLineBounds = [];
             const transfers = new Set();
@@ -615,13 +624,29 @@
 
             // Render lines and stations
             data.lines.forEach((line, li) => {
-              const color = lineColors[li % lineColors.length];
+              const lineType = line.type || "RADIAL_TRUNK";
+              const color =
+                lineTypeColors[lineType] ||
+                lineColors[li % lineColors.length];
               const latlngs = line.stations.map((st) => [st.lat, st.lon]);
               const poly = L.polyline(latlngs, {
                 color: color,
                 weight: 3,
                 opacity: 0.95,
               }).addTo(suggestionsLayer);
+
+              // Add label with line type and ID on the polyline
+              const midIdx = Math.floor(latlngs.length / 2);
+              if (midIdx < latlngs.length) {
+                const midPoint = latlngs[midIdx];
+                L.marker(midPoint, {
+                  icon: L.divIcon({
+                    className: "line-label",
+                    html: `<div style="background:${color};color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;font-size:12px;">${line.id}</div>`,
+                  }),
+                }).addTo(suggestionsLayer);
+              }
+
               allLineBounds.push(poly.getBounds());
 
               line.stations.forEach((st, si) => {
@@ -639,7 +664,7 @@
                   weight: 1,
                 }).addTo(suggestionsLayer);
                 m.bindPopup(
-                  `<strong>Station ${st.id}</strong><br/>Value: ${Number(st.value || 0).toLocaleString()}<br/>${st.lon.toFixed(6)}, ${st.lat.toFixed(6)}`,
+                  `<strong>Station ${st.id}</strong><br/>Type: ${lineType}<br/>Value: ${Number(st.value || 0).toLocaleString()}<br/>${st.lon.toFixed(6)}, ${st.lat.toFixed(6)}`,
                 );
                 m.bindTooltip(`${st.id}`, {
                   permanent: true,
@@ -662,7 +687,10 @@
 
             suggestBtn.disabled = true;
             hideSuggestBtn.disabled = false;
-            messageEl.textContent = `Showing ${data.lines.length} metro lines`;
+            const lineSummary = data.lines
+              .map((l) => `${l.id} (${l.type})`)
+              .join(", ");
+            messageEl.textContent = `Showing ${data.lines.length} metro lines: ${lineSummary}`;
           })
           .catch((err) => {
             console.error("Suggestions fetch error", err);

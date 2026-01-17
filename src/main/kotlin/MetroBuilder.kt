@@ -57,11 +57,19 @@ data class Corridor(
     val score: Double,
 )
 
+enum class LineType {
+    RADIAL_TRUNK, // passes through core, long distance
+    ORBITAL, // skirts core, intersects radials
+    CORE_DISTRIBUTOR, // short, dense, stays in core
+    NOT_METRO, // doesn't meet criteria (filtered out)
+}
+
 data class Line(
     val id: String,
     val stations: List<Station>,
     val lengthMeters: Double,
     val cost: Double,
+    val type: LineType = LineType.RADIAL_TRUNK,
 )
 
 data class BuilderParams(
@@ -76,7 +84,12 @@ data class BuilderParams(
 
 class MetroBuilder(
     val params: BuilderParams,
+    val debug: Boolean = true,
 ) {
+    private fun dbg(msg: String) {
+        if (debug) println("[MetroBuilder] $msg")
+    }
+
     // Step 1: Build demand graph (OD matrix) using a gravity model
     fun buildODMatrix(
         zones: List<Zone>,
@@ -551,6 +564,65 @@ class MetroBuilder(
         return indices.sortedBy { points[it].lat }
     }
 
+    // Step 0: Classify corridor intent based on geometry of interaction with center
+    private fun classifyCorridor(
+        chain: List<Int>,
+        places: List<GridPoint>,
+        centerLon: Double,
+        centerLat: Double,
+        coreRadius: Double,
+        ringRadius: Double,
+    ): LineType {
+        if (chain.isEmpty()) return LineType.NOT_METRO
+
+        // Compute min and max distance of chain nodes from center
+        val distances =
+            chain.map { idx ->
+                haversineMeters(places[idx].lon, places[idx].lat, centerLon, centerLat)
+            }
+        val minDistToCenter = distances.minOrNull() ?: Double.MAX_VALUE
+        val maxDistToCenter = distances.maxOrNull() ?: 0.0
+
+        // Count stations in core and ring
+        val stationsInCore =
+            chain.count { idx ->
+                haversineMeters(places[idx].lon, places[idx].lat, centerLon, centerLat) <= coreRadius
+            }
+        val stationsInRing =
+            chain.count { idx ->
+                val d = haversineMeters(places[idx].lon, places[idx].lat, centerLon, centerLat)
+                d > coreRadius && d <= ringRadius * 1.2
+            }
+        val fracInCore = stationsInCore.toDouble() / chain.size.coerceAtLeast(1)
+        val fracInRing = stationsInRing.toDouble() / chain.size.coerceAtLeast(1)
+
+        // Soft geometric classification (no length/demand constraints)
+        return when {
+            // Radial: enters core and extends far beyond ring
+            minDistToCenter <= coreRadius && maxDistToCenter >= ringRadius -> {
+                dbg("    Chain of ${chain.size}: RADIAL_TRUNK (enters core, exits far)")
+                LineType.RADIAL_TRUNK
+            }
+
+            // Orbital: avoids core, stays in ring band
+            minDistToCenter > coreRadius && maxDistToCenter <= ringRadius * 1.2 -> {
+                dbg("    Chain of ${chain.size}: ORBITAL (skirts core, ring-bound)")
+                LineType.ORBITAL
+            }
+
+            // Core distributor: mostly inside inner core
+            fracInCore >= 0.6 -> {
+                dbg("    Chain of ${chain.size}: CORE_DISTRIBUTOR (${(fracInCore * 100).toInt()}% in core)")
+                LineType.CORE_DISTRIBUTOR
+            }
+
+            else -> {
+                dbg("    Chain of ${chain.size}: NOT_METRO (no clear pattern)")
+                LineType.NOT_METRO
+            }
+        }
+    }
+
     // Natural Metro Network Formation — Corridor-First Implementation
     fun buildNaturalNetworkFromGrid(
         gridPoints: List<GridPoint>,
@@ -587,6 +659,10 @@ class MetroBuilder(
 
         if (places.size < 2) return emptyList()
 
+        // STEP 1 — Instrumentation
+        dbg("STEP 1 — Places identified: ${places.size}")
+        dbg("Top 5 place values: ${places.take(5).map { "%.0f".format(it.value) }}")
+
         // Demand Centroid (City Center)
         var totalVal = 0.0
         var weightedLon = 0.0
@@ -610,6 +686,26 @@ class MetroBuilder(
                 else -> 2500.0 // Outer corridors
             }
 
+        // Compute city scale dynamically (Layer 1 → Layer 2 boundary)
+        val distancesFromCenter =
+            places
+                .map { p ->
+                    haversineMeters(p.lon, p.lat, centerLon, centerLat)
+                }.sorted()
+        val cityRadius =
+            if (distancesFromCenter.isNotEmpty()) {
+                distancesFromCenter[(distancesFromCenter.size * 0.9).toInt()]
+            } else {
+                5000.0
+            }
+        val coreRadius = cityRadius * 0.35 // ~7–9 km for London
+        val ringRadius = cityRadius * 0.6 // ~12–15 km for London
+        dbg(
+            "City scale: cityRadius=${"%.0f".format(
+                cityRadius,
+            )}m, coreRadius=${"%.0f".format(coreRadius)}m, ringRadius=${"%.0f".format(ringRadius)}m",
+        )
+
         // STEP 2 — Build a place-to-place demand graph
         val n = places.size
         val adj = Array(n) { DoubleArray(n) { 0.0 } }
@@ -622,6 +718,11 @@ class MetroBuilder(
                 adj[j][i] = demand
             }
         }
+
+        // STEP 2 — Instrumentation
+        val maxDemand = adj.maxOf { row -> row.maxOrNull() ?: 0.0 }
+        val avgDemand = adj.sumOf { it.sum() } / (n * n).coerceAtLeast(1)
+        dbg("STEP 2 — Demand graph built: maxDemand=${"%.1f".format(maxDemand)} avgDemand=${"%.1f".format(avgDemand)}")
 
         // STEP 3 — Find long demand chains (discover corridors)
         val visitedEdges = mutableSetOf<Pair<Int, Int>>()
@@ -708,6 +809,10 @@ class MetroBuilder(
             if (chain.size >= 2) candidateChains.add(chain)
         }
 
+        // STEP 3 — Instrumentation
+        dbg("STEP 3 — Candidate chains found: ${candidateChains.size}")
+        dbg("Chain lengths (top 10): ${candidateChains.map { it.size }.sortedDescending().take(10)}")
+
         // STEP 4b — Filter chains: reject short or redundant chains (reintroduced)
         val validChains =
             candidateChains
@@ -720,32 +825,68 @@ class MetroBuilder(
                     dist >= minCorridorLengthMeters
                 }.sortedByDescending { it.size }
 
-        // STEP 8 — Cap the number of lines and enforce radial hierarchy
-        val finalCorridors = mutableListOf<List<Int>>()
-        var radialCount = 0
-        val maxRadials = (maxTrunkLines * 0.6).toInt().coerceAtLeast(1)
-        val coreRadius = 2500.0
+        // STEP 4 — Instrumentation
+        dbg("STEP 4 — Valid chains after filtering: ${validChains.size}")
+        dbg("Valid chain lengths: ${validChains.map { it.size }.sortedByDescending { it }.take(10)}")
 
-        for (chain in validChains) {
-            if (finalCorridors.size >= maxTrunkLines) break
-
-            // Redundancy check
-            val alreadyCovered = chain.count { idx -> finalCorridors.any { it.contains(idx) } }
-            if (alreadyCovered >= chain.size * 0.5) continue
-
-            // Radial check: does it pass near the center?
-            val isRadial = chain.any { haversineMeters(places[it].lon, places[it].lat, centerLon, centerLat) < coreRadius }
-
-            if (isRadial && radialCount >= maxRadials) {
-                // Skirt the core: allow it only if it's very high value relative to others?
-                // For now, let's just skip to favor variety.
-                continue
+        // STEP 0 — Classify corridors by intent (NEW)
+        dbg("STEP 0 — Classifying corridors (soft geometric rules):")
+        val classifiedChains =
+            validChains.map { chain ->
+                chain to classifyCorridor(chain, places, centerLon, centerLat, coreRadius, ringRadius)
             }
-            if (isRadial) radialCount++
-            finalCorridors.add(chain)
+
+        // Filter out non-metro corridors; separate by type
+        val radialTrunks = classifiedChains.filter { it.second == LineType.RADIAL_TRUNK }.map { it.first }
+        val coreDistributors = classifiedChains.filter { it.second == LineType.CORE_DISTRIBUTOR }.map { it.first }
+        val orbitals = classifiedChains.filter { it.second == LineType.ORBITAL }.map { it.first }
+
+        // STEP 0 — Instrumentation (KEY)
+        dbg("STEP 0 — Corridor classification:")
+        dbg("  RADIAL_TRUNK → ${radialTrunks.size} chains")
+        dbg("  CORE_DISTRIBUTOR → ${coreDistributors.size} chains")
+        dbg("  ORBITAL → ${orbitals.size} chains")
+        dbg("  NOT_METRO → ${classifiedChains.count { it.second == LineType.NOT_METRO }} chains")
+
+        // STEP 8 — Cap and select lines: prioritize radials, then distributors, then orbitals
+        val finalCorridors = mutableListOf<Pair<List<Int>, LineType>>()
+        var redundantCount = 0
+
+        // Add radials (up to 60% of budget)
+        val maxRadials = (maxTrunkLines * 0.6).toInt().coerceAtLeast(1)
+        for (chain in radialTrunks) {
+            if (finalCorridors.size >= maxTrunkLines) break
+            val alreadyCovered = chain.count { idx -> finalCorridors.any { it.first.contains(idx) } }
+            if (alreadyCovered < chain.size * 0.5) {
+                finalCorridors.add(chain to LineType.RADIAL_TRUNK)
+            }
         }
 
-        // STEP 5, 6, 7 — Place stations with Variable Spacing and Terminal Thinning
+        // Add core distributors
+        for (chain in coreDistributors) {
+            if (finalCorridors.size >= maxTrunkLines) break
+            val alreadyCovered = chain.count { idx -> finalCorridors.any { it.first.contains(idx) } }
+            if (alreadyCovered < chain.size * 0.5) {
+                finalCorridors.add(chain to LineType.CORE_DISTRIBUTOR)
+            }
+        }
+
+        // Add orbitals (if room)
+        for (chain in orbitals) {
+            if (finalCorridors.size >= maxTrunkLines) break
+            val alreadyCovered = chain.count { idx -> finalCorridors.any { it.first.contains(idx) } }
+            if (alreadyCovered < chain.size * 0.5) {
+                finalCorridors.add(chain to LineType.ORBITAL)
+            }
+        }
+
+        // STEP 8 — Instrumentation
+        dbg("STEP 8 — Final corridors selected: ${finalCorridors.size}")
+        finalCorridors.forEach {
+            dbg("  Line type ${it.second} with ${it.first.size} nodes")
+        }
+
+        // STEP 5, 6, 7 — Place stations with type-specific rules
         val stationRegistry = mutableListOf<Station>()
         val transferDist = 400.0
 
@@ -764,17 +905,56 @@ class MetroBuilder(
         }
 
         val builtLines = mutableListOf<Line>()
-        for ((li, chain) in finalCorridors.withIndex()) {
-            val lineId = "L${li + 1}"
+        for ((li, chainWithType) in finalCorridors.withIndex()) {
+            val (chain, lineType) = chainWithType
+            val typePrefix =
+                when (lineType) {
+                    LineType.RADIAL_TRUNK -> "RT"
+                    LineType.CORE_DISTRIBUTOR -> "CD"
+                    LineType.ORBITAL -> "O"
+                    LineType.NOT_METRO -> "X"
+                }
+            val lineId = "${typePrefix}${li + 1}"
 
             // Find the "seed" (highest value node in the chain)
             val seedIndexInChain = chain.indices.maxByOrNull { places[chain[it]].value } ?: (chain.size / 2)
             val seedNode = chain[seedIndexInChain]
 
+            dbg(
+                "Line $lineId ($lineType): initial chain size=${chain.size}, seed node=$seedNode, seedValue=${"%.0f".format(
+                    places[seedNode].value,
+                )}",
+            )
+
             val finalizedNodes = mutableListOf<Int>()
             finalizedNodes.add(seedNode)
 
             var cumulativePop = places[seedNode].value
+
+            // Type-specific rules for terminal thinning and spacing
+            val terminateThresholdFrac =
+                when (lineType) {
+                    LineType.RADIAL_TRUNK -> 0.08
+
+                    LineType.CORE_DISTRIBUTOR -> 0.15
+
+                    // stricter for core lines
+                    LineType.ORBITAL -> 0.10
+
+                    LineType.NOT_METRO -> 0.20
+                }
+
+            val terminalThresholdDistMeters =
+                when (lineType) {
+                    LineType.RADIAL_TRUNK -> 5000.0
+
+                    LineType.CORE_DISTRIBUTOR -> 2000.0
+
+                    // shorter threshold
+                    LineType.ORBITAL -> 4000.0
+
+                    LineType.NOT_METRO -> 3000.0
+                }
 
             // Grow Forward from seed
             var lastIdx = seedIndexInChain
@@ -785,17 +965,32 @@ class MetroBuilder(
                 val distCenter = haversineMeters(p.lon, p.lat, centerLon, centerLat)
                 val distSeed = haversineMeters(p.lon, p.lat, places[seedNode].lon, places[seedNode].lat)
 
-                val minSpace = getMinSpacing(distCenter)
-                // Terminal thinning: demand requirements grow as we move away from seed
-                val penaltyFactor = (1.0 + (distSeed / 8000.0).pow(1.5))
+                val minSpace =
+                    when (lineType) {
+                        LineType.CORE_DISTRIBUTOR -> 600.0
+
+                        // dense
+                        else -> getMinSpacing(distCenter)
+                    }
+
+                val penaltyFactor =
+                    when (lineType) {
+                        LineType.RADIAL_TRUNK -> (1.0 + (distSeed / 8000.0).pow(1.5))
+
+                        LineType.CORE_DISTRIBUTOR -> 1.0
+
+                        // no penalty; stay dense
+                        LineType.ORBITAL -> (1.0 + (distSeed / 6000.0).pow(1.2))
+
+                        LineType.NOT_METRO -> 1.5
+                    }
                 val requiredValue = minStationValue * penaltyFactor
 
                 if (distLast >= minSpace && p.value >= requiredValue) {
                     finalizedNodes.add(pIdx)
                     lastIdx = i
                     cumulativePop += p.value
-                } else if (distSeed > 5000 && p.value < cumulativePop * 0.08) {
-                    // Terminal stop: line doesn't earn this station
+                } else if (distSeed > terminalThresholdDistMeters && p.value < cumulativePop * terminateThresholdFrac) {
                     break
                 }
             }
@@ -809,20 +1004,31 @@ class MetroBuilder(
                 val distCenter = haversineMeters(p.lon, p.lat, centerLon, centerLat)
                 val distSeed = haversineMeters(p.lon, p.lat, places[seedNode].lon, places[seedNode].lat)
 
-                val minSpace = getMinSpacing(distCenter)
-                val penaltyFactor = (1.0 + (distSeed / 8000.0).pow(1.5))
+                val minSpace =
+                    when (lineType) {
+                        LineType.CORE_DISTRIBUTOR -> 600.0
+                        else -> getMinSpacing(distCenter)
+                    }
+
+                val penaltyFactor =
+                    when (lineType) {
+                        LineType.RADIAL_TRUNK -> (1.0 + (distSeed / 8000.0).pow(1.5))
+                        LineType.CORE_DISTRIBUTOR -> 1.0
+                        LineType.ORBITAL -> (1.0 + (distSeed / 6000.0).pow(1.2))
+                        LineType.NOT_METRO -> 1.5
+                    }
                 val requiredValue = minStationValue * penaltyFactor
 
                 if (distLast >= minSpace && p.value >= requiredValue) {
                     finalizedNodes.add(0, pIdx)
                     lastIdx = i
                     cumulativePop += p.value
-                } else if (distSeed > 5000 && p.value < cumulativePop * 0.08) {
+                } else if (distSeed > terminalThresholdDistMeters && p.value < cumulativePop * terminateThresholdFrac) {
                     break
                 }
             }
 
-            if (finalizedNodes.size >= 2) { // Allow shorter lines if they are high value
+            if (finalizedNodes.size >= 2) {
                 val lineStations =
                     finalizedNodes.mapIndexed { idx, pIdx ->
                         val p = places[pIdx]
@@ -830,8 +1036,15 @@ class MetroBuilder(
                     }
                 val length = lineStations.zipWithNext().sumOf { (a, b) -> haversineMeters(a.lon, a.lat, b.lon, b.lat) }
                 val cost = length / 1000.0 * params.constructionCostPerKm + lineStations.size * params.costPerStation
-                builtLines.add(Line(lineId, lineStations, length, cost))
+                dbg("Line $lineId finalized: stations=${finalizedNodes.size}")
+                builtLines.add(Line(lineId, lineStations, length, cost, lineType))
             }
+        }
+
+        // FINAL — Instrumentation
+        dbg("FINAL — Built lines: ${builtLines.size}")
+        builtLines.forEach {
+            dbg("  ${it.id}: type=${it.type}, stations=${it.stations.size}, length=${"%.1f".format(it.lengthMeters / 1000)} km")
         }
 
         return builtLines
