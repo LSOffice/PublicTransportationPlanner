@@ -104,6 +104,12 @@
     <input id="zoomRange" type="range" min="1" max="19" step="0.01" value="10" />
     <input id="zoomValue" type="text" value="10" />
     <button id="drawBtn">Draw</button>
+    <button id="suggestBtn" disabled style="margin-left: 8px">
+      Suggestions
+    </button>
+    <button id="hideSuggestBtn" disabled style="margin-left: 4px">
+      Hide Suggestions
+    </button>
     <span id="areaLabel">Area: <span id="areaDisplay">—</span> km²</span>
     <span id="message"></span>
     <div id="centroidRow">
@@ -151,6 +157,8 @@
 
     // Grid overlay: layer and cached data
     const gridLayer = L.layerGroup().addTo(map);
+    // Suggestions overlay: stations and proposed lines
+    const suggestionsLayer = L.layerGroup().addTo(map);
     let gridData = null;
 
     async function loadGridCsv() {
@@ -330,10 +338,34 @@
       else disableDraw();
     });
 
+    // Wire suggestion buttons
+    try {
+      suggestBtn.addEventListener("click", function () {
+        try {
+          showSuggestions();
+        } catch (e) {
+          console.error("showSuggestions click failed", e);
+          messageEl.textContent = "Suggestions error";
+        }
+      });
+      hideSuggestBtn.addEventListener("click", function () {
+        try {
+          clearSuggestions();
+        } catch (e) {
+          console.error("clearSuggestions click failed", e);
+        }
+      });
+    } catch (e) {
+      console.warn("Failed to bind suggestion buttons", e);
+    }
+
     function clearExisting() {
       drawnItems.clearLayers();
       try {
         gridLayer.clearLayers();
+      } catch (e) { }
+      try {
+        suggestionsLayer.clearLayers();
       } catch (e) { }
       areaDisplay.textContent = "—";
       messageEl.textContent = "";
@@ -480,6 +512,21 @@
               count > 0
                 ? `Found ${count} grid cells intersecting selection`
                 : "No grid cells intersect selection";
+
+            // Store matches and enable the Suggestions button; user triggers suggestions manually
+            try {
+              window._lastMatches = matches.slice();
+              if (matches.length > 0) {
+                suggestBtn.disabled = false;
+                hideSuggestBtn.disabled = true;
+                messageEl.textContent = `Found ${matches.length} grid points inside selection — click Suggestions to request routes`;
+              } else {
+                suggestBtn.disabled = true;
+                hideSuggestBtn.disabled = true;
+              }
+            } catch (e) {
+              console.warn("store matches failed", e);
+            }
           } catch (err) {
             console.error("grid overlay error", err);
             messageEl.textContent = "Grid overlay error";
@@ -494,6 +541,138 @@
         messageEl.textContent = "Area calculation failed";
       }
     });
+
+    // Suggestions: show/hide handlers
+    function clearSuggestions() {
+      try {
+        suggestionsLayer.clearLayers();
+      } catch (e) { }
+      // show population density grid again
+      try {
+        if (!map.hasLayer(gridLayer)) map.addLayer(gridLayer);
+      } catch (e) { }
+      hideSuggestBtn.disabled = true;
+      suggestBtn.disabled =
+        window._lastMatches && window._lastMatches.length ? false : true;
+      messageEl.textContent = "";
+    }
+
+    function showSuggestions() {
+      try {
+        const matches = (window._lastMatches || []).slice();
+        if (!matches || matches.length === 0) {
+          messageEl.textContent = "No matches available for suggestions";
+          return;
+        }
+
+        suggestionsLayer.clearLayers();
+        // hide the population density grid layer while showing suggestions
+        try {
+          if (map.hasLayer(gridLayer)) map.removeLayer(gridLayer);
+        } catch (e) { }
+
+        // POST matches to /suggestions endpoint
+        const csvBody = matches
+          .map((m) => `${m.lon},${m.lat},${m.value}`)
+          .join("\n");
+        fetch("/suggestions", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: csvBody,
+        })
+          .then((resp) => {
+            if (!resp.ok)
+              throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+            return resp.json();
+          })
+          .then((data) => {
+            const lineColors = [
+              "#2b83ba",
+              "#fdae61",
+              "#66bd63",
+              "#7b3294",
+              "#d73027",
+              "#1f78b4",
+              "#e31a1c",
+            ];
+            const created = {};
+            const allLineBounds = [];
+            const transfers = new Set();
+
+            // First pass: collect all stations and detect intersections
+            const allStations = new Map();
+            data.lines.forEach((line, li) => {
+              line.stations.forEach((st) => {
+                const key = `${st.lon},${st.lat}`;
+                if (!allStations.has(key))
+                  allStations.set(key, { ...st, lines: [] });
+                allStations.get(key).lines.push(li);
+              });
+            });
+            allStations.forEach((st) => {
+              if (st.lines.length > 1) transfers.add(`${st.lon},${st.lat}`);
+            });
+
+            // Render lines and stations
+            data.lines.forEach((line, li) => {
+              const color = lineColors[li % lineColors.length];
+              const latlngs = line.stations.map((st) => [st.lat, st.lon]);
+              const poly = L.polyline(latlngs, {
+                color: color,
+                weight: 3,
+                opacity: 0.95,
+              }).addTo(suggestionsLayer);
+              allLineBounds.push(poly.getBounds());
+
+              line.stations.forEach((st, si) => {
+                const key = `${st.lon},${st.lat}`;
+                if (created[key]) return;
+                const isTransfer = transfers.has(key);
+                const radius = isTransfer
+                  ? 10
+                  : Math.max(6, Math.min(18, (st.value || 0) / 100));
+                const m = L.circleMarker([st.lat, st.lon], {
+                  radius: radius,
+                  color: isTransfer ? "#c62828" : color,
+                  fillColor: isTransfer ? "#c62828" : color,
+                  fillOpacity: 0.95,
+                  weight: 1,
+                }).addTo(suggestionsLayer);
+                m.bindPopup(
+                  `<strong>Station ${st.id}</strong><br/>Value: ${Number(st.value || 0).toLocaleString()}<br/>${st.lon.toFixed(6)}, ${st.lat.toFixed(6)}`,
+                );
+                m.bindTooltip(`${st.id}`, {
+                  permanent: true,
+                  direction: "center",
+                });
+                created[key] = m;
+              });
+            });
+
+            // Fit map
+            if (allLineBounds.length > 0) {
+              try {
+                const combined = allLineBounds.reduce(
+                  (acc, b) => acc.extend(b),
+                  allLineBounds[0],
+                );
+                map.fitBounds(combined, { padding: [20, 20] });
+              } catch (e) { }
+            }
+
+            suggestBtn.disabled = true;
+            hideSuggestBtn.disabled = false;
+            messageEl.textContent = `Showing ${data.lines.length} metro lines`;
+          })
+          .catch((err) => {
+            console.error("Suggestions fetch error", err);
+            messageEl.textContent = "Failed to fetch suggestions";
+          });
+      } catch (err) {
+        console.error("showSuggestions error", err);
+        messageEl.textContent = "Suggestions error";
+      }
+    }
 
     // Ensure the map recalculates size when the page finishes loading
     window.addEventListener("load", function () {

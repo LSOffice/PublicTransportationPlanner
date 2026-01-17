@@ -11,7 +11,12 @@ import java.net.URL
 import java.net.URLDecoder
 import kotlin.math.*
 
-fun haversineMeters(lon1: Double, lat1: Double, lon2: Double, lat2: Double): Double {
+fun haversineMeters(
+    lon1: Double,
+    lat1: Double,
+    lon2: Double,
+    lat2: Double,
+): Double {
     val R = 6371000.0
     val phi1 = Math.toRadians(lat1)
     val phi2 = Math.toRadians(lat2)
@@ -53,14 +58,15 @@ fun main() {
                 exchange.responseBody.use { it.write(notFound.toByteArray()) }
             } else {
                 val content = resourceStream.readAllBytes()
-                val contentType = when {
-                    path.endsWith(".html") -> "text/html; charset=utf-8"
-                    path.endsWith(".js") -> "application/javascript"
-                    path.endsWith(".css") -> "text/css"
-                    path.endsWith(".png") -> "image/png"
-                    path.endsWith(".jpg") || path.endsWith(".jpeg") -> "image/jpeg"
-                    else -> "application/octet-stream"
-                }
+                val contentType =
+                    when {
+                        path.endsWith(".html") -> "text/html; charset=utf-8"
+                        path.endsWith(".js") -> "application/javascript"
+                        path.endsWith(".css") -> "text/css"
+                        path.endsWith(".png") -> "image/png"
+                        path.endsWith(".jpg") || path.endsWith(".jpeg") -> "image/jpeg"
+                        else -> "application/octet-stream"
+                    }
                 exchange.responseHeaders.add("Content-Type", contentType)
                 exchange.sendResponseHeaders(200, content.size.toLong())
                 exchange.responseBody.use { it.write(content) }
@@ -69,9 +75,13 @@ fun main() {
             e.printStackTrace()
             try {
                 exchange.sendResponseHeaders(500, -1)
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         } finally {
-            try { exchange.close() } catch (_: Exception) {}
+            try {
+                exchange.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -79,10 +89,13 @@ fun main() {
     server.createContext("/proxy") { exchange ->
         try {
             val query = exchange.requestURI.query ?: ""
-            val params = query.split("&").mapNotNull { part ->
-                val idx = part.indexOf('=')
-                if (idx <= 0) null else part.substring(0, idx) to part.substring(idx + 1)
-            }.toMap()
+            val params =
+                query
+                    .split("&")
+                    .mapNotNull { part ->
+                        val idx = part.indexOf('=')
+                        if (idx <= 0) null else part.substring(0, idx) to part.substring(idx + 1)
+                    }.toMap()
 
             val rawUrl = params["url"]?.let { URLDecoder.decode(it, "UTF-8") }
             if (rawUrl == null || rawUrl.isBlank()) {
@@ -140,16 +153,19 @@ fun main() {
             exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
             exchange.sendResponseHeaders(code, body.size.toLong())
             exchange.responseBody.use { it.write(body) }
-
         } catch (e: Exception) {
             e.printStackTrace()
             try {
                 val err = "Proxy error"
                 exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
                 exchange.responseBody.use { it.write(err.toByteArray()) }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         } finally {
-            try { exchange.close() } catch (_: Exception) {}
+            try {
+                exchange.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -157,10 +173,13 @@ fun main() {
     server.createContext("/density") { exchange ->
         try {
             val q = exchange.requestURI.query ?: ""
-            val params = q.split("&").mapNotNull { part ->
-                val idx = part.indexOf('=')
-                if (idx <= 0) null else part.substring(0, idx) to URLDecoder.decode(part.substring(idx + 1), "UTF-8")
-            }.toMap()
+            val params =
+                q
+                    .split("&")
+                    .mapNotNull { part ->
+                        val idx = part.indexOf('=')
+                        if (idx <= 0) null else part.substring(0, idx) to URLDecoder.decode(part.substring(idx + 1), "UTF-8")
+                    }.toMap()
 
             val lonStr = params["lon"]
             val latStr = params["lat"]
@@ -216,7 +235,8 @@ fun main() {
             reader.close()
 
             if (bestDist <= maxM) {
-                val json = "{" +
+                val json =
+                    "{" +
                         "\"lon\":$bestLon,\"lat\":$bestLat,\"value\":$bestZ,\"distance_m\":$bestDist" +
                         "}"
                 exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
@@ -228,16 +248,202 @@ fun main() {
                 exchange.sendResponseHeaders(404, msg.toByteArray().size.toLong())
                 exchange.responseBody.use { it.write(msg.toByteArray()) }
             }
-
         } catch (e: Exception) {
             e.printStackTrace()
             try {
                 val err = "Density lookup error"
                 exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
                 exchange.responseBody.use { it.write(err.toByteArray()) }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         } finally {
-            try { exchange.close() } catch (_: Exception) {}
+            try {
+                exchange.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // Metro suggestions endpoint - builds a simple metro from CSV zones and returns stations/lines
+    server.createContext("/metro_suggestions") { exchange ->
+        try {
+            val resourceStream = object {}.javaClass.getResourceAsStream("/gbr_pd_2020_1km_ASCII_XYZ.csv")
+            if (resourceStream == null) {
+                val msg = "CSV resource not found"
+                exchange.sendResponseHeaders(500, msg.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(msg.toByteArray()) }
+                return@createContext
+            }
+
+            val reader = BufferedReader(InputStreamReader(resourceStream))
+            var line = reader.readLine() // header
+            val zones = mutableListOf<org.lsoffice.Zone>()
+            var idx = 0
+            while (true) {
+                line = reader.readLine() ?: break
+                val parts = line.split(',')
+                if (parts.size < 3) continue
+                val x = parts[0].toDoubleOrNull() ?: continue
+                val y = parts[1].toDoubleOrNull() ?: continue
+                val z = parts[2].toDoubleOrNull() ?: continue
+                // use z as a density-like value; scale to a nominal population estimate
+                val pop = max(1.0, z * 1000.0)
+                val jobs = pop * 0.2
+                zones.add(
+                    org.lsoffice.Zone(
+                        "z$idx",
+                        x,
+                        y,
+                        pop,
+                        jobs,
+                        activity = 0.0,
+                        growthForecast = 1.0,
+                        socioeconomicWeight = 1.0,
+                        zoningAllowsGrowth = true,
+                    ),
+                )
+                idx += 1
+            }
+            reader.close()
+
+            // run metro builder
+            val builder =
+                org.lsoffice.MetroBuilder(
+                    org.lsoffice.BuilderParams(capitalBudget = 1_000_000_000.0, operatingBudgetPerYear = 50_000_000.0),
+                )
+            val od = builder.buildODMatrix(zones)
+            val hubs = builder.computeHubScores(zones, od)
+            val stations = builder.generateCandidateStations(zones, hubs.take(100))
+            val corridors = builder.generateCandidateCorridors(hubs.take(100), od, zones)
+            val lines = builder.optimizeNetwork(corridors)
+
+            // simple JSON serialization
+            val sb = StringBuilder()
+            sb.append("{")
+            sb.append("\"stations\":[")
+            stations.forEachIndexed { i, s ->
+                if (i > 0) sb.append(',')
+                sb.append('{')
+                sb.append("\"id\":\"").append(s.id).append("\",")
+                sb.append("\"lon\":").append(s.lon).append(',')
+                sb.append("\"lat\":").append(s.lat).append(',')
+                sb.append("\"catchment\":").append(s.catchmentPopulation)
+                sb.append('}')
+            }
+            sb.append("],\"lines\":[")
+            lines.forEachIndexed { i, l ->
+                if (i > 0) sb.append(',')
+                sb.append('{')
+                sb.append("\"id\":\"").append(l.id).append("\",")
+                sb.append("\"length_m\":").append(l.lengthMeters).append(',')
+                sb.append("\"cost\":").append(l.cost).append(',')
+                sb.append("\"stations\":[")
+                l.stations.forEachIndexed { j, st ->
+                    if (j > 0) sb.append(',')
+                    sb.append('{')
+                    sb.append("\"id\":\"").append(st.id).append("\",")
+                    sb.append("\"lon\":").append(st.lon).append(',')
+                    sb.append("\"lat\":").append(st.lat)
+                    sb.append('}')
+                }
+                sb.append("]}")
+            }
+            sb.append("]}")
+
+            val body = sb.toString().toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
+            exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try {
+                val err = "Metro build error"
+                exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(err.toByteArray()) }
+            } catch (_: Exception) {
+            }
+        } finally {
+            try {
+                exchange.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // Metro suggestions from client-provided points (POST body: CSV lines "lon,lat,value")
+    server.createContext("/suggestions") { exchange ->
+        try {
+            if (exchange.requestMethod != "POST") {
+                val msg = "Use POST with CSV body: lon,lat,value per line"
+                exchange.sendResponseHeaders(405, msg.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(msg.toByteArray()) }
+                return@createContext
+            }
+
+            val body = exchange.requestBody.bufferedReader().readText()
+            val pointLines = body.split("\n", "\r\n").map { it.trim() }.filter { it.isNotEmpty() }
+            val gridPoints = mutableListOf<GridPoint>()
+            for (l in pointLines) {
+                val parts = l.split(',').map { it.trim() }
+                if (parts.size < 3) continue
+                val lon = parts[0].toDoubleOrNull() ?: continue
+                val lat = parts[1].toDoubleOrNull() ?: continue
+                val v = parts[2].toDoubleOrNull() ?: continue
+                gridPoints.add(GridPoint(lon, lat, v))
+            }
+
+            if (gridPoints.isEmpty()) {
+                val msg = "No valid points received"
+                exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(msg.toByteArray()) }
+                return@createContext
+            }
+
+            val builder = MetroBuilder(BuilderParams(capitalBudget = 1_000_000_000.0, operatingBudgetPerYear = 50_000_000.0))
+            val lines = builder.buildMetroLinesFromGrid(gridPoints)
+
+            val sb = StringBuilder()
+            sb.append("{")
+            sb.append("\"lines\":[")
+            lines.forEachIndexed { i: Int, l: org.lsoffice.Line ->
+                if (i > 0) sb.append(',')
+                sb.append('{')
+                sb.append("\"id\":\"").append(l.id).append("\",")
+                sb.append("\"length_m\":").append(l.lengthMeters).append(',')
+                sb.append("\"cost\":").append(l.cost).append(',')
+                sb.append("\"stations\":[")
+                l.stations.forEachIndexed { j: Int, st: org.lsoffice.Station ->
+                    if (j > 0) sb.append(',')
+                    sb.append('{')
+                    sb.append("\"id\":\"").append(st.id).append("\",")
+                    sb.append("\"lon\":").append(st.lon).append(',')
+                    sb.append("\"lat\":").append(st.lat).append(',')
+                    sb.append("\"value\":").append(st.catchmentPopulation)
+                    sb.append('}')
+                }
+                sb.append("]}")
+            }
+            sb.append("]}")
+
+            val respBody = sb.toString().toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
+            exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
+            exchange.sendResponseHeaders(200, respBody.size.toLong())
+            exchange.responseBody.use { it.write(respBody) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try {
+                val err = "Suggestions error"
+                exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(err.toByteArray()) }
+            } catch (_: Exception) {
+            }
+        } finally {
+            try {
+                exchange.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
