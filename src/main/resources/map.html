@@ -1,51 +1,509 @@
 <!doctype html>
 <html>
+
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
-    html, body, #map { height: 100%; margin: 0; padding: 0; }
-    .leaflet-container { font-family: Arial, Helvetica, sans-serif; }
+    html,
+    body,
+    #map {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+
+    #map {
+      background: #ddd;
+    }
+
+    /* keep things simple and avoid heavy transforms */
+    .leaflet-container {
+      -webkit-transform: none !important;
+      transform: none !important;
+    }
+
+    /* floating controls */
+    #controls {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 8px;
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+    }
+
+    #controls input[type="range"] {
+      width: 160px;
+    }
+
+    #controls input[type="text"] {
+      width: 70px;
+    }
+
+    #drawBtn {
+      margin-left: 8px;
+      padding: 4px 8px;
+    }
+
+    #areaLabel {
+      display: inline-block;
+      margin-left: 8px;
+      font-weight: bold;
+    }
+
+    #message {
+      display: inline-block;
+      margin-left: 12px;
+      color: red;
+      font-weight: bold;
+    }
+
+    #centroid {
+      display: inline-block;
+      margin-left: 8px;
+    }
+
+    #neighbourhoodInfo {
+      display: block;
+      margin-top: 6px;
+      font-size: 13px;
+    }
+
+    #neighbourhoodInfo pre {
+      white-space: pre-wrap;
+      max-width: 480px;
+    }
+
+    /* density label for circle tooltips */
+    .density-label {
+      background: rgba(255, 255, 255, 0.85) !important;
+      color: #000 !important;
+      padding: 2px 6px !important;
+      border-radius: 4px !important;
+      font-weight: 700 !important;
+      font-size: 12px !important;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25) !important;
+      pointer-events: none !important;
+    }
   </style>
 </head>
+
 <body>
-<div id="map"></div>
+  <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-  let map = L.map('map').setView([0, 0], 2);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap'
-  }).addTo(map);
+  <div id="controls">
+    Zoom:
+    <input id="zoomRange" type="range" min="1" max="19" step="0.01" value="10" />
+    <input id="zoomValue" type="text" value="10" />
+    <button id="drawBtn">Draw</button>
+    <span id="areaLabel">Area: <span id="areaDisplay">—</span> km²</span>
+    <span id="message"></span>
+    <div id="centroidRow">
+      Center: <span id="centroid">—</span>
+      <span id="density" style="margin-left: 12px; font-weight: bold"></span>
+    </div>
+    <div id="neighbourhoodInfo">
+      Neighbourhood:
+      <pre id="neighProps">—</pre>
+    </div>
+  </div>
 
-  // Expose functions to Kotlin via WebEngine.executeScript
-  function setView(lat, lon, zoom) {
-    map.setView([lat, lon], zoom);
-  }
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+  <script>
+    // Minimal full-screen Leaflet map
+    const map = L.map("map", {
+      center: [51.5074, -0.1278],
+      zoom: 10,
+      dragging: true,
+      scrollWheelZoom: true,
+      touchZoom: true,
+      zoomAnimation: false,
+      preferCanvas: false,
+    });
 
-  function getBounds() {
-    const b = map.getBounds();
-    return {north: b.getNorth(), south: b.getSouth(), west: b.getWest(), east: b.getEast()};
-  }
+    const tileLayer = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        maxZoom: 19,
+        attribution: "© OpenStreetMap",
+      },
+    ).addTo(map);
 
-  // Allow drawing a rectangle by clicking two points (simple implementation)
-  let rectLayer = null;
-  let startPoint = null;
-  map.on('click', function(e) {
-    if (!startPoint) {
-      startPoint = e.latlng;
-      if (rectLayer) { map.removeLayer(rectLayer); rectLayer = null; }
-    } else {
-      const bounds = [startPoint, e.latlng];
-      rectLayer = L.rectangle(bounds, {color: '#ff7800', weight: 1}).addTo(map);
-      startPoint = null;
-      // send bounds to Kotlin by updating window.lastRect
-      window.lastRect = rectLayer.getBounds();
+    // Controls
+    const zoomRange = document.getElementById("zoomRange");
+    const zoomValue = document.getElementById("zoomValue");
+    const drawBtn = document.getElementById("drawBtn");
+    const areaDisplay = document.getElementById("areaDisplay");
+    const messageEl = document.getElementById("message");
+    const centroidEl = document.getElementById("centroid");
+    const densityEl = document.getElementById("density");
+    const neighPropsEl = document.getElementById("neighProps");
+
+    // Grid overlay: layer and cached data
+    const gridLayer = L.layerGroup().addTo(map);
+    let gridData = null;
+
+    async function loadGridCsv() {
+      if (gridData !== null) return gridData;
+      try {
+        const resp = await fetch("/gbr_pd_2020_1km_ASCII_XYZ.csv");
+        if (!resp.ok) throw new Error("Failed to load CSV");
+        const text = await resp.text();
+        const lines = text.split(/\r?\n/);
+        const out = [];
+        for (let i = 1; i < lines.length; i++) {
+          const l = lines[i].trim();
+          if (!l) continue;
+          const parts = l.split(",");
+          if (parts.length < 3) continue;
+          const x = parseFloat(parts[0]);
+          const y = parseFloat(parts[1]);
+          const z = parseFloat(parts[2]);
+          if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
+          out.push({ lon: x, lat: y, value: z });
+        }
+        gridData = out;
+        return gridData;
+      } catch (err) {
+        console.error("loadGridCsv error", err);
+        gridData = [];
+        return gridData;
+      }
     }
-  });
-</script>
+
+    function styleForValue(v) {
+      // simple color ramp
+      if (v <= 1)
+        return {
+          color: "#1a9850",
+          fillColor: "#a6d96a",
+          fillOpacity: 0.6,
+          weight: 1,
+        };
+      if (v <= 5)
+        return {
+          color: "#66bd63",
+          fillColor: "#66bd63",
+          fillOpacity: 0.6,
+          weight: 1,
+        };
+      if (v <= 20)
+        return {
+          color: "#fdae61",
+          fillColor: "#fdae61",
+          fillOpacity: 0.6,
+          weight: 1,
+        };
+      return {
+        color: "#d73027",
+        fillColor: "#d73027",
+        fillOpacity: 0.6,
+        weight: 1,
+      };
+    }
+
+    function radiusForValue(v) {
+      // map value to circle radius (meters) - reduced scale and capped
+      const base = 10; // smaller minimum radius
+      const r = base + v * 6; // much smaller multiplier than before
+      return Math.max(5, Math.min(500, r));
+    }
+
+    function radiusForValueRelative(v, minV, maxV) {
+      const minR = 6; // meters
+      const maxR = 200; // meters (relative cap)
+      if (!isFinite(v)) return minR;
+      if (!isFinite(minV) || !isFinite(maxV) || maxV === minV) {
+        // fallback to small absolute radius
+        return Math.max(5, Math.min(200, 6 + v * 6));
+      }
+      const t = (v - minV) / (maxV - minV);
+      return minR + t * (maxR - minR);
+    }
+
+    // Initialize range and text
+    zoomRange.value = map.getZoom();
+    zoomValue.value = map.getZoom();
+
+    // Update map when slider changes (allow fractional zoom)
+    zoomRange.addEventListener("input", function () {
+      const z = parseFloat(this.value);
+      map.setZoom(z);
+      zoomValue.value = z.toFixed(2);
+    });
+
+    // Update map when text input changes
+    zoomValue.addEventListener("change", function () {
+      const v = parseFloat(this.value);
+      if (!isNaN(v)) {
+        const clamped = Math.max(1, Math.min(19, v));
+        map.setZoom(clamped);
+        zoomRange.value = clamped;
+        this.value = clamped.toFixed(2);
+      } else {
+        this.value = map.getZoom().toFixed(2);
+      }
+    });
+
+    // Sync slider when user uses map zoom controls (mouse wheel or +/-)
+    map.on("zoom", function () {
+      const z = map.getZoom();
+      zoomRange.value = z;
+      zoomValue.value = z.toFixed(2);
+    });
+
+    // Drawing via Leaflet.draw
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: true,
+        polyline: false,
+        rectangle: true,
+        circle: false,
+        marker: false,
+        circlemarker: false,
+      },
+      edit: {
+        featureGroup: drawnItems,
+        edit: true,
+        remove: true,
+      },
+    });
+
+    let drawMode = false;
+    let activeDrawer = null;
+
+    function enableDraw() {
+      messageEl.textContent = "";
+      drawMode = true;
+      drawBtn.textContent = "Cancel Draw";
+      try {
+        map.dragging.disable();
+      } catch (e) { }
+      try {
+        map.scrollWheelZoom.disable();
+      } catch (e) { }
+      try {
+        map.touchZoom.disable();
+      } catch (e) { }
+      activeDrawer = new L.Draw.Polygon(
+        map,
+        drawControl.options.draw.polygon ? {} : {},
+      );
+      activeDrawer.enable();
+    }
+
+    function disableDraw() {
+      drawMode = false;
+      drawBtn.textContent = "Draw";
+      try {
+        map.dragging.enable();
+      } catch (e) { }
+      try {
+        map.scrollWheelZoom.enable();
+      } catch (e) { }
+      try {
+        map.touchZoom.enable();
+      } catch (e) { }
+      if (activeDrawer) {
+        try {
+          activeDrawer.disable();
+        } catch (e) { }
+        activeDrawer = null;
+      }
+    }
+
+    drawBtn.addEventListener("click", function () {
+      if (!drawMode) enableDraw();
+      else disableDraw();
+    });
+
+    function clearExisting() {
+      drawnItems.clearLayers();
+      try {
+        gridLayer.clearLayers();
+      } catch (e) { }
+      areaDisplay.textContent = "—";
+      messageEl.textContent = "";
+      centroidEl.textContent = "—";
+      densityEl.textContent = "";
+      neighPropsEl.textContent = "—";
+    }
+
+    const AREA_CAP_KM2 = 84000.0;
+
+    function computeCentroidCoords(geojson) {
+      try {
+        const c = turf.centroid(geojson);
+        if (c && c.geometry && c.geometry.coordinates) {
+          const lon = c.geometry.coordinates[0];
+          const lat = c.geometry.coordinates[1];
+          return [lat, lon];
+        }
+      } catch (err) {
+        console.error("centroid error", err);
+      }
+      return null;
+    }
+
+    // Neighbourhood repository lookup disabled to avoid external camaraproject requests.
+    async function findNeighbourhoodData(lat, lon) {
+      messageEl.textContent = "Neighbourhood repository lookup disabled";
+      neighPropsEl.textContent = "disabled";
+      return null;
+    }
+
+    map.on(L.Draw.Event.CREATED, async function (e) {
+      const layer = e.layer;
+      try {
+        const geojson = layer.toGeoJSON();
+        const areaSqMeters = turf.area(geojson);
+        const areaKm2 = areaSqMeters / 1e6;
+        if (areaKm2 > AREA_CAP_KM2) {
+          messageEl.textContent = `Invalid: selected area ${areaKm2.toFixed(2)} km² exceeds limit of ${AREA_CAP_KM2.toLocaleString()} km²`;
+          try {
+            layer.remove();
+          } catch (e) { }
+          return;
+        }
+
+        clearExisting();
+        drawnItems.addLayer(layer);
+        areaDisplay.textContent = areaKm2.toFixed(4);
+
+        const centroid = computeCentroidCoords(geojson);
+        if (centroid) {
+          const lat = centroid[0];
+          const lon = centroid[1];
+          centroidEl.textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+          // First: check our CSV density grid via local server endpoint
+          messageEl.textContent = "Checking density grid...";
+          try {
+            const resp = await fetch(
+              `/density?lon=${encodeURIComponent(lon)}&lat=${encodeURIComponent(lat)}&max_m=1000`,
+            );
+            if (resp.ok) {
+              const json = await resp.json();
+              densityEl.textContent = `Density: ${Number(json.value).toLocaleString()} (nearest ${Number(json.distance_m).toFixed(1)} m)`;
+              messageEl.textContent = "";
+              try {
+                L.popup({ maxWidth: 300 })
+                  .setLatLng([json.lat, json.lon])
+                  .setContent(
+                    `<strong>Population density</strong><br/>${Number(json.value).toLocaleString()}<br/><small>distance ${Number(json.distance_m).toFixed(1)} m</small>`,
+                  )
+                  .openOn(map);
+              } catch (e) {
+                console.warn("popup failed", e);
+              }
+            } else if (resp.status === 404) {
+              const txt = await resp.text();
+              messageEl.textContent = txt || "No grid cell within 1000 m";
+              densityEl.textContent = "Density: not found within 1 km";
+            } else {
+              const txt = await resp.text();
+              messageEl.textContent = `Density lookup failed: ${txt}`;
+            }
+          } catch (err) {
+            console.error("density lookup error", err);
+            messageEl.textContent = "Density lookup error";
+          }
+
+          // Draw grid cells from CSV that intersect the drawn polygon
+          messageEl.textContent =
+            messageEl.textContent || "Finding intersecting grid cells...";
+          try {
+            const csv = await loadGridCsv();
+            try {
+              gridLayer.clearLayers();
+            } catch (e) { }
+            let count = 0;
+            const poly = geojson; // drawn polygon GeoJSON
+            const matches = [];
+            for (const g of csv) {
+              try {
+                const pt = turf.point([g.lon, g.lat]);
+                if (turf.booleanPointInPolygon(pt, poly)) {
+                  matches.push(g);
+                }
+              } catch (e) {
+                continue;
+              }
+            }
+            if (matches.length > 0) {
+              const vals = matches
+                .map((m) => m.value)
+                .filter((v) => isFinite(v));
+              const minV = vals.length ? Math.min(...vals) : NaN;
+              const maxV = vals.length ? Math.max(...vals) : NaN;
+              for (const g of matches) {
+                try {
+                  const st = styleForValue(g.value);
+                  const radius = radiusForValueRelative(g.value, minV, maxV);
+                  const c = L.circle([g.lat, g.lon], {
+                    radius: radius,
+                    color: st.color,
+                    fillColor: st.fillColor,
+                    fillOpacity: st.fillOpacity,
+                    weight: 1,
+                  }).addTo(gridLayer);
+                  c.bindPopup(
+                    `Value: ${Number(g.value)}\n${g.lon.toFixed(6)}, ${g.lat.toFixed(6)}\nRadius: ${Math.round(radius)} m`,
+                  );
+                  try {
+                    c.bindTooltip(`${Number(g.value)}`, {
+                      permanent: true,
+                      direction: "center",
+                      className: "density-label",
+                      interactive: false,
+                    });
+                  } catch (e) { }
+                  count += 1;
+                } catch (e) {
+                  continue;
+                }
+              }
+            }
+            messageEl.textContent =
+              count > 0
+                ? `Found ${count} grid cells intersecting selection`
+                : "No grid cells intersect selection";
+          } catch (err) {
+            console.error("grid overlay error", err);
+            messageEl.textContent = "Grid overlay error";
+          }
+        }
+
+        disableDraw();
+        drawBtn.disabled = true;
+        messageEl.textContent = "";
+      } catch (err) {
+        console.error("Area calculation failed", err);
+        messageEl.textContent = "Area calculation failed";
+      }
+    });
+
+    // Ensure the map recalculates size when the page finishes loading
+    window.addEventListener("load", function () {
+      setTimeout(function () {
+        try {
+          map.invalidateSize();
+        } catch (e) { }
+      }, 50);
+    });
+  </script>
 </body>
+
 </html>
