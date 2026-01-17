@@ -1299,6 +1299,53 @@ class MetroBuilder(
             }
 
         // Add orbital if justified
+        // If radials don't intersect enough in core, promote a CORE_DISTRIBUTOR before considering orbitals
+        run {
+            val radialChains = finalCorridors.filter { it.second == LineType.RADIAL_TRUNK }.map { it.first }
+            var pairCount = 0
+            var intersectPairs = 0
+            val interThreshold = 600.0
+            for (i in 0 until radialChains.size) {
+                for (j in i + 1 until radialChains.size) {
+                    pairCount++
+                    var found = false
+                    for (a in radialChains[i]) {
+                        for (b in radialChains[j]) {
+                            val d = haversineMeters(places[a].lon, places[a].lat, places[b].lon, places[b].lat)
+                            if (d <= interThreshold) {
+                                // ensure intersection occurs in core
+                                val midLon = (places[a].lon + places[b].lon) / 2.0
+                                val midLat = (places[a].lat + places[b].lat) / 2.0
+                                val midDist = haversineMeters(midLon, midLat, centerLon, centerLat)
+                                if (midDist <= coreRadius * 1.2) {
+                                    found = true
+                                    break
+                                }
+                            }
+                        }
+                        if (found) break
+                    }
+                    if (found) intersectPairs++
+                }
+            }
+            val avgIntersections = if (pairCount > 0) intersectPairs.toDouble() / pairCount else 0.0
+            if (avgIntersections < 1.5 && distributorScores.isNotEmpty()) {
+                // promote best available core distributor not already selected
+                val selectedDistributor =
+                    distributorScores.map { it.first }.firstOrNull { chain ->
+                        finalCorridors.none { it.first == chain }
+                    }
+                if (selectedDistributor != null) {
+                    finalCorridors.add(selectedDistributor to LineType.CORE_DISTRIBUTOR)
+                    dbg(
+                        "  ⚠ Low radial interconnection (avg=${"%.2f".format(
+                            avgIntersections,
+                        )}) — promoted a CORE_DISTRIBUTOR to improve connectivity",
+                    )
+                }
+            }
+        }
+
         if (needsOrbital && orbitals.isNotEmpty() && finalCorridors.count { it.second == LineType.ORBITAL } < maxOrbitals) {
             // Select the orbital with best potential: longest ring among those not in core
             val orbitalScores =
@@ -1328,9 +1375,78 @@ class MetroBuilder(
         dbg("    CORE_DISTRIBUTOR: ${finalCorridors.count { it.second == LineType.CORE_DISTRIBUTOR }}")
         dbg("    ORBITAL: ${finalCorridors.count { it.second == LineType.ORBITAL }}")
 
+        // Enforce mandatory interchanges between crossing corridors BEFORE station placement
+        fun enforceMandatoryInterchanges(
+            corridors: MutableList<Pair<List<Int>, LineType>>,
+            places: List<GridPoint>,
+            centerLon: Double,
+            centerLat: Double,
+            coreRadius: Double,
+        ) {
+            val interchangeThreshold = 600.0 // meters
+            for (a in 0 until corridors.size) {
+                for (b in a + 1 until corridors.size) {
+                    val chainA = corridors[a].first
+                    val chainB = corridors[b].first
+                    // find closest approach
+                    var bestDist = Double.MAX_VALUE
+                    var bestAi = -1
+                    var bestBj = -1
+                    for (i in chainA.indices) {
+                        for (j in chainB.indices) {
+                            val pa = places[chainA[i]]
+                            val pb = places[chainB[j]]
+                            val d = haversineMeters(pa.lon, pa.lat, pb.lon, pb.lat)
+                            if (d < bestDist) {
+                                bestDist = d
+                                bestAi = chainA[i]
+                                bestBj = chainB[j]
+                            }
+                        }
+                    }
+                    if (bestDist <= interchangeThreshold) {
+                        // require interchange only if within core band (or inner ring)
+                        val midLon = (places[bestAi].lon + places[bestBj].lon) / 2.0
+                        val midLat = (places[bestAi].lat + places[bestBj].lat) / 2.0
+                        val midDistToCenter = haversineMeters(midLon, midLat, centerLon, centerLat)
+                        if (midDistToCenter <= coreRadius * 1.2) {
+                            // insert the place index from chainA into chainB (if missing)
+                            val insertIdx = bestAi
+                            if (!chainB.contains(insertIdx)) {
+                                // find position in chainB near bestBj
+                                val pos = corridors[b].first.indexOf(bestBj)
+                                if (pos >= 0) {
+                                    val newChain = corridors[b].first.toMutableList()
+                                    // insert after pos to maintain monotonic order
+                                    newChain.add(pos + 1, insertIdx)
+                                    corridors[b] = newChain.toList() to corridors[b].second
+                                    dbg("  ✓ Forced interchange: inserted place $insertIdx into corridor $b to connect with corridor $a")
+                                }
+                            }
+                            // also ensure chainA contains bestBj (symmetric)
+                            val insertIdxB = bestBj
+                            if (!chainA.contains(insertIdxB)) {
+                                val posA = corridors[a].first.indexOf(bestAi)
+                                if (posA >= 0) {
+                                    val newChainA = corridors[a].first.toMutableList()
+                                    newChainA.add(posA + 1, insertIdxB)
+                                    corridors[a] = newChainA.toList() to corridors[a].second
+                                    dbg("  ✓ Forced interchange: inserted place $insertIdxB into corridor $a to connect with corridor $b")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply mandatory interchange enforcement
+        enforceMandatoryInterchanges(finalCorridors, places, centerLon, centerLat, coreRadius)
+
         // STEP 5, 6, 7 — Place stations with type-specific rules
         val stationRegistry = mutableListOf<Station>()
-        val transferDist = 400.0
+        val forcedInterchangeRadius = 600.0
+        val optionalTransferRadius = 300.0
 
         fun findOrCreateStation(
             lon: Double,
@@ -1338,9 +1454,17 @@ class MetroBuilder(
             value: Double,
             lineId: String,
             idx: Int,
+            callingLineType: LineType,
         ): Station {
-            val existing = stationRegistry.find { haversineMeters(it.lon, it.lat, lon, lat) <= transferDist }
-            if (existing != null) return existing
+            // First, force snap to any existing station within forced radius (ensures core interchanges)
+            val forced = stationRegistry.find { haversineMeters(it.lon, it.lat, lon, lat) <= forcedInterchangeRadius }
+            if (forced != null) return forced
+
+            // Next, allow optional transfer snapping within a smaller radius
+            val optional = stationRegistry.find { haversineMeters(it.lon, it.lat, lon, lat) <= optionalTransferRadius }
+            if (optional != null) return optional
+
+            // Otherwise create a new station
             val st = Station("st_${lineId}_$idx", lon, lat, value)
             stationRegistry.add(st)
             return st
@@ -1567,11 +1691,11 @@ class MetroBuilder(
                         val terminalStations =
                             finalNodeList.take(finalNodeList.size - 1).mapIndexed { idx, pIdx ->
                                 val p = places[pIdx]
-                                findOrCreateStation(p.lon, p.lat, p.value, lineId, idx)
+                                findOrCreateStation(p.lon, p.lat, p.value, lineId, idx, lineType)
                             }
                         // Add one more station at the junction (snapped terminal)
                         val p = places[last]
-                        val junctionStation = findOrCreateStation(p.lon, p.lat, p.value, lineId, finalNodeList.size - 1)
+                        val junctionStation = findOrCreateStation(p.lon, p.lat, p.value, lineId, finalNodeList.size - 1, lineType)
                         finalStations = terminalStations + junctionStation
                     }
                 }
@@ -1581,7 +1705,7 @@ class MetroBuilder(
                     finalStations =
                         finalNodeList.mapIndexed { idx, pIdx ->
                             val p = places[pIdx]
-                            findOrCreateStation(p.lon, p.lat, p.value, lineId, idx)
+                            findOrCreateStation(p.lon, p.lat, p.value, lineId, idx, lineType)
                         }
                 }
 
