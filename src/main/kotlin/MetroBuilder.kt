@@ -550,4 +550,290 @@ class MetroBuilder(
         // Fallback: sort by latitude; could be replaced with PCA in future
         return indices.sortedBy { points[it].lat }
     }
+
+    // Natural Metro Network Formation — Corridor-First Implementation
+    fun buildNaturalNetworkFromGrid(
+        gridPoints: List<GridPoint>,
+        walkRadiusMeters: Double = 800.0,
+        minStationValue: Double = 1.0,
+        maxTrunkLines: Int = 4,
+        minCorridorLengthMeters: Double = 5_000.0,
+        minStationsPerLine: Int = 5,
+    ): List<Line> {
+        if (gridPoints.isEmpty()) return emptyList()
+
+        // STEP 1 — Identify places, not points (collapse grid artifacts)
+        val sortedPoints = gridPoints.sortedByDescending { it.value }
+        val places = mutableListOf<GridPoint>()
+        val clusterRadius = 1000.0
+        val used = BooleanArray(gridPoints.size) { false }
+        val pointIndices = gridPoints.indices.sortedByDescending { gridPoints[it].value }
+
+        for (idx in pointIndices) {
+            if (used[idx]) continue
+            val p = gridPoints[idx]
+            if (p.value < minStationValue) break
+
+            // Sum up values in radius to create a "Place"
+            var sumVal = 0.0
+            for (j in gridPoints.indices) {
+                if (haversineMeters(p.lon, p.lat, gridPoints[j].lon, gridPoints[j].lat) <= clusterRadius) {
+                    sumVal += gridPoints[j].value
+                    used[j] = true
+                }
+            }
+            places.add(GridPoint(p.lon, p.lat, sumVal))
+        }
+
+        if (places.size < 2) return emptyList()
+
+        // Demand Centroid (City Center)
+        var totalVal = 0.0
+        var weightedLon = 0.0
+        var weightedLat = 0.0
+        for (p in places) {
+            weightedLon += p.lon * p.value
+            weightedLat += p.lat * p.value
+            totalVal += p.value
+        }
+        val centerLon = if (totalVal > 0) weightedLon / totalVal else places[0].lon
+        val centerLat = if (totalVal > 0) weightedLat / totalVal else places[0].lat
+
+        fun getMinSpacing(distFromCenterMeters: Double): Double =
+            when {
+                distFromCenterMeters < 3000 -> 700.0
+
+                // CBD core
+                distFromCenterMeters < 10000 -> 1200.0
+
+                // Inner suburbs
+                else -> 2500.0 // Outer corridors
+            }
+
+        // STEP 2 — Build a place-to-place demand graph
+        val n = places.size
+        val adj = Array(n) { DoubleArray(n) { 0.0 } }
+        for (i in 0 until n) {
+            for (j in i + 1 until n) {
+                val distKm = haversineMeters(places[i].lon, places[i].lat, places[j].lon, places[j].lat) / 1000.0
+                // Gravity model: demand = (m1 * m2) / d^1.5
+                val demand = (places[i].value * places[j].value) / (distKm.pow(1.5).coerceAtLeast(0.1))
+                adj[i][j] = demand
+                adj[j][i] = demand
+            }
+        }
+
+        // STEP 3 — Find long demand chains (discover corridors)
+        val visitedEdges = mutableSetOf<Pair<Int, Int>>()
+        val candidateChains = mutableListOf<List<Int>>()
+
+        // Start from high-demand node pairs and grow chains
+        val allEdges = mutableListOf<Triple<Int, Int, Double>>()
+        for (i in 0 until n) {
+            for (j in i + 1 until n) {
+                allEdges.add(Triple(i, j, adj[i][j]))
+            }
+        }
+        allEdges.sortByDescending { it.third }
+
+        for (edge in allEdges.take(100)) { // look at top 100 demand edges
+            if (visitedEdges.contains(edge.first to edge.second)) continue
+
+            val chain = mutableListOf(edge.first, edge.second)
+            visitedEdges.add(edge.first to edge.second)
+            visitedEdges.add(edge.second to edge.first)
+
+            // Grow forwards
+            var current = edge.second
+            var prev = edge.first
+            while (true) {
+                var bestNext = -1
+                var bestDemand = 0.0
+                for (next in 0 until n) {
+                    if (chain.contains(next)) continue
+                    val demand = adj[current][next]
+                    // Geometry check: avoid sharp turns (> 60 degrees)
+                    val d1x = places[current].lon - places[prev].lon
+                    val d1y = places[current].lat - places[prev].lat
+                    val d2x = places[next].lon - places[current].lon
+                    val d2y = places[next].lat - places[current].lat
+                    val dot = d1x * d2x + d1y * d2y
+                    val mag1 = sqrt(d1x * d1x + d1y * d1y)
+                    val mag2 = sqrt(d2x * d2x + d2y * d2y)
+                    val cosTheta = if (mag1 * mag2 > 0) dot / (mag1 * mag2) else 1.0
+
+                    if (cosTheta > 0.5 && demand > bestDemand) {
+                        bestDemand = demand
+                        bestNext = next
+                    }
+                }
+                if (bestNext == -1 || bestDemand < edge.third * 0.1) break
+                chain.add(bestNext)
+                visitedEdges.add(current to bestNext)
+                visitedEdges.add(bestNext to current)
+                prev = current
+                current = bestNext
+            }
+
+            // Grow backwards
+            current = edge.first
+            prev = edge.second
+            while (true) {
+                var bestNext = -1
+                var bestDemand = 0.0
+                for (next in 0 until n) {
+                    if (chain.contains(next)) continue
+                    val demand = adj[current][next]
+                    val d1x = places[current].lon - places[prev].lon
+                    val d1y = places[current].lat - places[prev].lat
+                    val d2x = places[next].lon - places[current].lon
+                    val d2y = places[next].lat - places[current].lat
+                    val dot = d1x * d2x + d1y * d2y
+                    val mag1 = sqrt(d1x * d1x + d1y * d1y)
+                    val mag2 = sqrt(d2x * d2x + d2y * d2y)
+                    val cosTheta = if (mag1 * mag2 > 0) dot / (mag1 * mag2) else 1.0
+
+                    if (cosTheta > 0.5 && demand > bestDemand) {
+                        bestDemand = demand
+                        bestNext = next
+                    }
+                }
+                if (bestNext == -1 || bestDemand < edge.third * 0.1) break
+                chain.add(0, bestNext)
+                visitedEdges.add(current to bestNext)
+                visitedEdges.add(bestNext to current)
+                prev = current
+                current = bestNext
+            }
+            if (chain.size >= 2) candidateChains.add(chain)
+        }
+
+        // STEP 4b — Filter chains: reject short or redundant chains (reintroduced)
+        val validChains =
+            candidateChains
+                .filter { chain ->
+                    if (chain.size < minStationsPerLine) return@filter false
+                    val dist =
+                        chain.zipWithNext().sumOf { (a, b) ->
+                            haversineMeters(places[a].lon, places[a].lat, places[b].lon, places[b].lat)
+                        }
+                    dist >= minCorridorLengthMeters
+                }.sortedByDescending { it.size }
+
+        // STEP 8 — Cap the number of lines and enforce radial hierarchy
+        val finalCorridors = mutableListOf<List<Int>>()
+        var radialCount = 0
+        val maxRadials = (maxTrunkLines * 0.6).toInt().coerceAtLeast(1)
+        val coreRadius = 2500.0
+
+        for (chain in validChains) {
+            if (finalCorridors.size >= maxTrunkLines) break
+
+            // Redundancy check
+            val alreadyCovered = chain.count { idx -> finalCorridors.any { it.contains(idx) } }
+            if (alreadyCovered >= chain.size * 0.5) continue
+
+            // Radial check: does it pass near the center?
+            val isRadial = chain.any { haversineMeters(places[it].lon, places[it].lat, centerLon, centerLat) < coreRadius }
+
+            if (isRadial && radialCount >= maxRadials) {
+                // Skirt the core: allow it only if it's very high value relative to others?
+                // For now, let's just skip to favor variety.
+                continue
+            }
+            if (isRadial) radialCount++
+            finalCorridors.add(chain)
+        }
+
+        // STEP 5, 6, 7 — Place stations with Variable Spacing and Terminal Thinning
+        val stationRegistry = mutableListOf<Station>()
+        val transferDist = 400.0
+
+        fun findOrCreateStation(
+            lon: Double,
+            lat: Double,
+            value: Double,
+            lineId: String,
+            idx: Int,
+        ): Station {
+            val existing = stationRegistry.find { haversineMeters(it.lon, it.lat, lon, lat) <= transferDist }
+            if (existing != null) return existing
+            val st = Station("st_${lineId}_$idx", lon, lat, value)
+            stationRegistry.add(st)
+            return st
+        }
+
+        val builtLines = mutableListOf<Line>()
+        for ((li, chain) in finalCorridors.withIndex()) {
+            val lineId = "L${li + 1}"
+
+            // Find the "seed" (highest value node in the chain)
+            val seedIndexInChain = chain.indices.maxByOrNull { places[chain[it]].value } ?: (chain.size / 2)
+            val seedNode = chain[seedIndexInChain]
+
+            val finalizedNodes = mutableListOf<Int>()
+            finalizedNodes.add(seedNode)
+
+            var cumulativePop = places[seedNode].value
+
+            // Grow Forward from seed
+            var lastIdx = seedIndexInChain
+            for (i in seedIndexInChain + 1 until chain.size) {
+                val pIdx = chain[i]
+                val p = places[pIdx]
+                val distLast = haversineMeters(p.lon, p.lat, places[chain[lastIdx]].lon, places[chain[lastIdx]].lat)
+                val distCenter = haversineMeters(p.lon, p.lat, centerLon, centerLat)
+                val distSeed = haversineMeters(p.lon, p.lat, places[seedNode].lon, places[seedNode].lat)
+
+                val minSpace = getMinSpacing(distCenter)
+                // Terminal thinning: demand requirements grow as we move away from seed
+                val penaltyFactor = (1.0 + (distSeed / 8000.0).pow(1.5))
+                val requiredValue = minStationValue * penaltyFactor
+
+                if (distLast >= minSpace && p.value >= requiredValue) {
+                    finalizedNodes.add(pIdx)
+                    lastIdx = i
+                    cumulativePop += p.value
+                } else if (distSeed > 5000 && p.value < cumulativePop * 0.08) {
+                    // Terminal stop: line doesn't earn this station
+                    break
+                }
+            }
+
+            // Grow Backward from seed
+            lastIdx = seedIndexInChain
+            for (i in seedIndexInChain - 1 downTo 0) {
+                val pIdx = chain[i]
+                val p = places[pIdx]
+                val distLast = haversineMeters(p.lon, p.lat, places[chain[lastIdx]].lon, places[chain[lastIdx]].lat)
+                val distCenter = haversineMeters(p.lon, p.lat, centerLon, centerLat)
+                val distSeed = haversineMeters(p.lon, p.lat, places[seedNode].lon, places[seedNode].lat)
+
+                val minSpace = getMinSpacing(distCenter)
+                val penaltyFactor = (1.0 + (distSeed / 8000.0).pow(1.5))
+                val requiredValue = minStationValue * penaltyFactor
+
+                if (distLast >= minSpace && p.value >= requiredValue) {
+                    finalizedNodes.add(0, pIdx)
+                    lastIdx = i
+                    cumulativePop += p.value
+                } else if (distSeed > 5000 && p.value < cumulativePop * 0.08) {
+                    break
+                }
+            }
+
+            if (finalizedNodes.size >= 2) { // Allow shorter lines if they are high value
+                val lineStations =
+                    finalizedNodes.mapIndexed { idx, pIdx ->
+                        val p = places[pIdx]
+                        findOrCreateStation(p.lon, p.lat, p.value, lineId, idx)
+                    }
+                val length = lineStations.zipWithNext().sumOf { (a, b) -> haversineMeters(a.lon, a.lat, b.lon, b.lat) }
+                val cost = length / 1000.0 * params.constructionCostPerKm + lineStations.size * params.costPerStation
+                builtLines.add(Line(lineId, lineStations, length, cost))
+            }
+        }
+
+        return builtLines
+    }
 }

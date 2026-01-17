@@ -401,7 +401,13 @@ fun main() {
             }
 
             val builder = MetroBuilder(BuilderParams(capitalBudget = 1_000_000_000.0, operatingBudgetPerYear = 50_000_000.0))
-            val lines = builder.buildMetroLinesFromGrid(gridPoints)
+            val lines =
+                builder.buildNaturalNetworkFromGrid(
+                    gridPoints,
+                    minStationValue = 0.0,
+                    minCorridorLengthMeters = 2000.0,
+                    minStationsPerLine = 3,
+                )
 
             val sb = StringBuilder()
             sb.append("{")
