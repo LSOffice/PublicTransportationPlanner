@@ -417,6 +417,7 @@ fun main() {
                 sb.append('{')
                 sb.append("\"id\":\"").append(l.id).append("\",")
                 sb.append("\"type\":\"").append(l.type.name).append("\",")
+                sb.append("\"isLoop\":").append(l.isLoop).append(',')
                 sb.append("\"length_m\":").append(l.lengthMeters).append(',')
                 sb.append("\"cost\":").append(l.cost).append(',')
                 sb.append("\"stations\":[")

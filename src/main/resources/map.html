@@ -110,6 +110,9 @@
     <button id="hideSuggestBtn" disabled style="margin-left: 4px">
       Hide Suggestions
     </button>
+    <button id="tubeMapBtn" disabled style="margin-left: 8px">
+      Tube Map
+    </button>
     <span id="areaLabel">Area: <span id="areaDisplay">—</span> km²</span>
     <span id="message"></span>
     <div id="centroidRow">
@@ -355,6 +358,16 @@
           console.error("clearSuggestions click failed", e);
         }
       });
+      document
+        .getElementById("tubeMapBtn")
+        .addEventListener("click", function () {
+          try {
+            generateTubeMap(window._lastLineData);
+          } catch (e) {
+            console.error("tubeMapBtn click failed", e);
+            messageEl.textContent = "Tube map generation error";
+          }
+        });
     } catch (e) {
       console.warn("Failed to bind suggestion buttons", e);
     }
@@ -554,6 +567,7 @@
       hideSuggestBtn.disabled = true;
       suggestBtn.disabled =
         window._lastMatches && window._lastMatches.length ? false : true;
+      document.getElementById("tubeMapBtn").disabled = true;
       messageEl.textContent = "";
     }
 
@@ -625,24 +639,35 @@
             // Render lines and stations
             data.lines.forEach((line, li) => {
               const lineType = line.type || "RADIAL_TRUNK";
+              const isLoop = line.isLoop || false;
               const color =
                 lineTypeColors[lineType] ||
                 lineColors[li % lineColors.length];
               const latlngs = line.stations.map((st) => [st.lat, st.lon]);
-              const poly = L.polyline(latlngs, {
-                color: color,
-                weight: 3,
-                opacity: 0.95,
-              }).addTo(suggestionsLayer);
+
+              // Use dashed style for loops
+              const polylineStyle = isLoop
+                ? {
+                  color: color,
+                  weight: 3,
+                  opacity: 0.95,
+                  dashArray: "5, 5",
+                }
+                : { color: color, weight: 3, opacity: 0.95 };
+
+              const poly = L.polyline(latlngs, polylineStyle).addTo(
+                suggestionsLayer,
+              );
 
               // Add label with line type and ID on the polyline
               const midIdx = Math.floor(latlngs.length / 2);
               if (midIdx < latlngs.length) {
                 const midPoint = latlngs[midIdx];
+                const loopMarker = isLoop ? " ⭕" : "";
                 L.marker(midPoint, {
                   icon: L.divIcon({
                     className: "line-label",
-                    html: `<div style="background:${color};color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;font-size:12px;">${line.id}</div>`,
+                    html: `<div style="background:${color};color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;font-size:12px;">${line.id}${loopMarker}</div>`,
                   }),
                 }).addTo(suggestionsLayer);
               }
@@ -663,8 +688,9 @@
                   fillOpacity: 0.95,
                   weight: 1,
                 }).addTo(suggestionsLayer);
+                const loopInfo = isLoop ? " [loop line]" : "";
                 m.bindPopup(
-                  `<strong>Station ${st.id}</strong><br/>Type: ${lineType}<br/>Value: ${Number(st.value || 0).toLocaleString()}<br/>${st.lon.toFixed(6)}, ${st.lat.toFixed(6)}`,
+                  `<strong>Station ${st.id}</strong><br/>Type: ${lineType}${loopInfo}<br/>Value: ${Number(st.value || 0).toLocaleString()}<br/>${st.lon.toFixed(6)}, ${st.lat.toFixed(6)}`,
                 );
                 m.bindTooltip(`${st.id}`, {
                   permanent: true,
@@ -688,9 +714,16 @@
             suggestBtn.disabled = true;
             hideSuggestBtn.disabled = false;
             const lineSummary = data.lines
-              .map((l) => `${l.id} (${l.type})`)
+              .map((l) => {
+                const loopMarker = l.isLoop ? " ⭕" : "";
+                return `${l.id} (${l.type})${loopMarker}`;
+              })
               .join(", ");
             messageEl.textContent = `Showing ${data.lines.length} metro lines: ${lineSummary}`;
+
+            // Store line data for tube map generation
+            window._lastLineData = data;
+            document.getElementById("tubeMapBtn").disabled = false;
           })
           .catch((err) => {
             console.error("Suggestions fetch error", err);
@@ -710,6 +743,204 @@
         } catch (e) { }
       }, 50);
     });
+
+    // Generate London Underground-style schematic tube map
+    function generateTubeMap(lineData) {
+      if (!lineData || lineData.lines.length === 0) {
+        messageEl.textContent = "No line data available for tube map";
+        return;
+      }
+
+      const lines = lineData.lines;
+      // Assign a distinct color to each line (HSL palette)
+      const lineColors = {};
+      function colorForIndex(i, total) {
+        const hue = Math.round((i * 360) / Math.max(1, total));
+        return `hsl(${hue},70%,45%)`;
+      }
+      lines.forEach((ln, idx) => {
+        lineColors[ln.id] = colorForIndex(idx, lines.length);
+      });
+
+      // Calculate layout: collect all stations
+      const allStations = new Map();
+      const lineStationMaps = [];
+
+      lines.forEach((line) => {
+        const lineStations = [];
+        line.stations.forEach((st) => {
+          const key = `${st.lon.toFixed(4)},${st.lat.toFixed(4)}`;
+          if (!allStations.has(key)) {
+            allStations.set(key, {
+              id: st.id,
+              lon: st.lon,
+              lat: st.lat,
+              value: st.value,
+              lines: [],
+            });
+          }
+          allStations.get(key).lines.push(line.id);
+          lineStations.push(key);
+        });
+        lineStationMaps.push({ line, stationKeys: lineStations });
+      });
+
+      // Compute bounds
+      const lons = Array.from(allStations.values()).map((s) => s.lon);
+      const lats = Array.from(allStations.values()).map((s) => s.lat);
+      const minLon = Math.min(...lons);
+      const maxLon = Math.max(...lons);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+
+      // Map geographic coords to schematic layout
+      const margin = 60;
+      const svgWidth = 1200;
+      const svgHeight = 900;
+      const plotWidth = svgWidth - 2 * margin;
+      const plotHeight = svgHeight - 2 * margin;
+
+      const lonRange = maxLon - minLon || 1;
+      const latRange = maxLat - minLat || 1;
+
+      const stationPositions = new Map();
+      allStations.forEach((st, key) => {
+        const x = margin + ((st.lon - minLon) / lonRange) * plotWidth;
+        const y =
+          margin + plotHeight - ((st.lat - minLat) / latRange) * plotHeight; // flip y
+        stationPositions.set(key, { x, y, station: st });
+      });
+
+      // Generate SVG
+      let svg = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Metro Network - Schematic Map</title>
+  <style>
+    body {
+      font-family: 'Arial', sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    svg {
+      background: white;
+      border: 1px solid #ddd;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .line {
+      stroke-width: 4;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .station {
+      fill: white;
+      stroke-width: 2;
+    }
+    .station-label {
+      font-size: 11px;
+      font-weight: bold;
+      text-anchor: middle;
+      dominant-baseline: middle;
+      pointer-events: none;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: bold;
+      margin-bottom: 15px;
+    }
+    .legend {
+      margin-top: 15px;
+      font-size: 12px;
+    }
+    .legend-item {
+      display: inline-block;
+      margin-right: 20px;
+    }
+    .legend-color {
+      display: inline-block;
+      width: 20px;
+      height: 3px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="title">Metro Network Schematic Map</div>
+  <svg width="${svgWidth}" height="${svgHeight}">`;
+
+      // Draw lines (each line gets a distinct color)
+      lineStationMaps.forEach((lineMap, idx) => {
+        const color = lineColors[lineMap.line.id] || "#999";
+        const lineId = lineMap.line.id;
+        const label = `${lineMap.line.id} (${lineMap.line.type})`;
+
+        // Draw path connecting stations in order
+        let pathD = "";
+        for (let i = 0; i < lineMap.stationKeys.length; i++) {
+          const key = lineMap.stationKeys[i];
+          const pos = stationPositions.get(key);
+          if (pos) {
+            if (i === 0) {
+              pathD += `M${pos.x},${pos.y}`;
+            } else {
+              pathD += `L${pos.x},${pos.y}`;
+            }
+          }
+        }
+
+        svg += `<path class="line" d="${pathD}" stroke="${color}" opacity="0.8" />`;
+      });
+
+      // Draw stations (order matters: draw on top)
+      const stationList = Array.from(stationPositions.entries());
+      stationList.forEach(([key, pos]) => {
+        const isTransfer = pos.station.lines.length > 1;
+        const radius = isTransfer ? 6 : 4;
+        const strokeColor = isTransfer ? "#c62828" : "#333";
+        svg += `<circle class="station" cx="${pos.x}" cy="${pos.y}" r="${radius}" stroke="${strokeColor}" />`;
+      });
+
+      // Draw station labels
+      stationList.forEach(([key, pos]) => {
+        const label = pos.station.id.replace("st_", "");
+        svg += `<text class="station-label" x="${pos.x}" y="${pos.y - 14}" fill="#000">${label}</text>`;
+      });
+
+      // Add legend (per-line colors)
+      svg += `<g>
+        <text x="20" y="30" font-size="12" font-weight="bold">Legend:</text>`;
+      let legendY = 50;
+      lineStationMaps.forEach((lm, i) => {
+        const color = lineColors[lm.line.id] || "#999";
+        const labelTxt = `${lm.line.id} (${lm.line.type})`;
+        svg += `<line x1="20" y1="${legendY}" x2="40" y2="${legendY}" stroke="${color}" stroke-width="3" />`;
+        svg += `<text x="50" y="${legendY + 5}" font-size="11">${labelTxt}</text>`;
+        legendY += 20;
+      });
+      svg += `</g>`;
+
+      svg += `</svg>
+  <div class="legend">
+    <div class="legend-item"><span class="legend-color" style="background: #d62728;"></span><strong>Radial Trunk:</strong> Main arterial lines</div>
+    <div class="legend-item"><span class="legend-color" style="background: #ff7f0e;"></span><strong>Core Distributor:</strong> Inner-city network</div>
+    <div class="legend-item"><span class="legend-color" style="background: #2ca02c;"></span><strong>Orbital:</strong> Ring/circumferential</div>
+  </div>
+  <p style="margin-top: 20px; font-size: 12px; color: #666;">
+    <strong>Note:</strong> This is a schematic diagram. Station positions are based on geographic coordinates but simplified for clarity.
+    Larger circles indicate transfer stations (served by multiple lines).
+  </p>
+</body>
+</html>`;
+
+      // Open in new tab
+      const blob = new Blob([svg], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    }
   </script>
 </body>
 
