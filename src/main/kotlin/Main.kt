@@ -317,6 +317,21 @@ fun main() {
             val corridors = builder.generateCandidateCorridors(hubs.take(100), od, zones)
             val lines = builder.optimizeNetwork(corridors)
 
+            // Calculate and display journey metrics
+            val metrics = builder.computeAverageJourneyMetrics(lines)
+            println("\n--- Average User Journeys Metrics ---")
+            println("Total Stations: ${metrics["total_stations"]?.toInt()}")
+            println("Reachable Pairs: ${metrics["reachable_pairs"]?.toInt()}")
+            println("Average Journey Time: ${"%.2f".format(metrics["average_time_mins"])} mins")
+            println("Maximum Journey Time: ${"%.2f".format(metrics["max_time_mins"])} mins")
+
+            println("All Journey Combinations:")
+            val journeys = builder.getAllJourneyTimes(lines)
+            journeys.sortedBy { it.third }.forEach { (from, to, time) ->
+                println("  $from -> $to : ${"%.2f".format(time)} mins")
+            }
+            println("------------------------------------\n")
+
             // simple JSON serialization
             val sb = StringBuilder()
             sb.append("{")
@@ -408,6 +423,21 @@ fun main() {
                     minCorridorLengthMeters = 2000.0,
                     minStationsPerLine = 3,
                 )
+
+            // Calculate and display journey metrics
+            val metrics = builder.computeAverageJourneyMetrics(lines)
+            println("\n--- Average User Journeys Metrics ---")
+            println("Total Stations: ${metrics["total_stations"]?.toInt()}")
+            println("Reachable Pairs: ${metrics["reachable_pairs"]?.toInt()}")
+            println("Average Journey Time: ${"%.2f".format(metrics["average_time_mins"])} mins")
+            println("Maximum Journey Time: ${"%.2f".format(metrics["max_time_mins"])} mins")
+
+            println("All Journey Combinations:")
+            val journeys = builder.getAllJourneyTimes(lines)
+            journeys.sortedBy { it.third }.forEach { (from, to, time) ->
+                println("  $from -> $to : ${"%.2f".format(time)} mins")
+            }
+            println("------------------------------------\n")
 
             val sb = StringBuilder()
             sb.append("{")

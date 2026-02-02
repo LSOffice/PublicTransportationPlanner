@@ -973,6 +973,67 @@ class MetroBuilder(
         )
     }
 
+    /**
+     * Compute average user journey metrics across all station pairs in the network.
+     * This uses Dijkstra's algorithm to calculate the shortest travel time between every possible
+     * permutation of station A -> station B, including estimated transfer times.
+     */
+    fun computeAverageJourneyMetrics(lines: List<Line>): Map<String, Double> {
+        if (lines.isEmpty()) return emptyMap()
+
+        val graph = buildStationGraph(lines)
+        val stations = lines.flatMap { it.stations }.distinctBy { it.id }
+        if (stations.size < 2) return emptyMap()
+
+        var totalTime = 0.0
+        var reachablePairs = 0
+        var maxTime = 0.0
+
+        for (source in stations) {
+            val distances = dijkstraShortestPath(graph, source.id)
+            for (targetId in stations.map { it.id }) {
+                if (source.id == targetId) continue
+                val time = distances[targetId] ?: Double.MAX_VALUE
+                if (time != Double.MAX_VALUE) {
+                    totalTime += time
+                    reachablePairs++
+                    if (time > maxTime) maxTime = time
+                }
+            }
+        }
+
+        val avgTime = if (reachablePairs > 0) totalTime / reachablePairs else 0.0
+        return mapOf(
+            "average_time_mins" to avgTime,
+            "max_time_mins" to maxTime,
+            "reachable_pairs" to reachablePairs.toDouble(),
+            "total_stations" to stations.size.toDouble(),
+        )
+    }
+
+    /**
+     * Returns a list of all station-to-station journeys and their travel times.
+     */
+    fun getAllJourneyTimes(lines: List<Line>): List<Triple<String, String, Double>> {
+        if (lines.isEmpty()) return emptyList()
+
+        val graph = buildStationGraph(lines)
+        val stations = lines.flatMap { it.stations }.distinctBy { it.id }
+        val results = mutableListOf<Triple<String, String, Double>>()
+
+        for (source in stations) {
+            val distances = dijkstraShortestPath(graph, source.id)
+            for (target in stations) {
+                if (source.id == target.id) continue
+                val time = distances[target.id] ?: Double.MAX_VALUE
+                if (time != Double.MAX_VALUE) {
+                    results.add(Triple(source.id, target.id, time))
+                }
+            }
+        }
+        return results
+    }
+
     // Natural Metro Network Formation — Corridor-First Implementation
     fun buildNaturalNetworkFromGrid(
         gridPoints: List<GridPoint>,

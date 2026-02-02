@@ -6,6 +6,7 @@ PublicTransportationPlanner is a small Kotlin-based utility to analyze geospatia
 
 - **Input:** Reads CSV population/coordinate files (example: `src/main/resources/gbr_pd_2020_1km_ASCII_XYZ.csv`).
 - **Output:** Produces `map.html` (visualization) and other derived artifacts.
+- **Metrics:** Calculates and displays average user journey metrics (travel time between all station pairs) using Dijkstra's algorithm. Results are displayed on the console.
 - **Implementation:** Command-line Kotlin application using Gradle build.
 
 **Requirements**
