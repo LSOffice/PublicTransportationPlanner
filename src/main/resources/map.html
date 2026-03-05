@@ -1024,21 +1024,49 @@
 
             // Reverse-geocode each unique station using OSM Nominatim via the local proxy.
             // Names resolve progressively (1.1 s between requests, Nominatim usage policy).
+            // Resolved names are stored in window._stationNames (by station id) so the
+            // tube map can use them even if it is opened after geocoding has begun.
+            window._stationNames = window._stationNames || {};
             (async () => {
+              // Classes/types Nominatim considers "notable" landmarks
+              const LANDMARK_CLASSES = new Set(['tourism', 'historic', 'leisure', 'government', 'man_made', 'military']);
+              const LANDMARK_AMENITIES = new Set([
+                'library', 'university', 'hospital', 'stadium', 'theatre', 'cinema',
+                'place_of_worship', 'arts_centre', 'college', 'courthouse', 'townhall'
+              ]);
+
+              function haversineM(lat1, lon1, lat2, lon2) {
+                const R = 6371000, toRad = Math.PI / 180;
+                const dLat = (lat2 - lat1) * toRad, dLon = (lon2 - lon1) * toRad;
+                const a = Math.sin(dLat / 2) ** 2 +
+                  Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+              }
+
               async function fetchAreaName(lat, lon) {
                 try {
+                  // zoom=17 returns the specific named feature at that point (building, park, etc.)
                   const nomUrl = encodeURIComponent(
-                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&zoom=15&format=json&accept-language=en`
+                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&zoom=17&format=json&accept-language=en`
                   );
                   const res = await fetch(`/proxy?url=${nomUrl}`);
                   if (!res.ok) return null;
                   const d = await res.json();
                   const a = d.address || {};
-                  return (
-                    a.neighbourhood || a.suburb || a.quarter ||
+                  const cls = d.class || "", typ = d.type || "";
+
+                  // If the result is a notable landmark AND its centroid is within 500 m, name the station after it
+                  const isLandmark = LANDMARK_CLASSES.has(cls) ||
+                    (cls === 'amenity' && LANDMARK_AMENITIES.has(typ));
+                  if (isLandmark && d.name) {
+                    const dist = haversineM(lat, lon, parseFloat(d.lat), parseFloat(d.lon));
+                    if (dist <= 500) return d.name;
+                  }
+
+                  // Otherwise fall back to the most specific local area name
+                  return a.neighbourhood || a.suburb || a.quarter ||
                     a.city_district || a.hamlet || a.village ||
-                    a.town || a.city || d.name || null
-                  );
+                    a.town || a.city || d.name || null;
                 } catch (e) {
                   return null;
                 }
@@ -1049,6 +1077,8 @@
                 if (!marker) continue;
                 const name = await fetchAreaName(st.lat, st.lon);
                 if (name) {
+                  // Cache so the tube map renderer can pick it up
+                  window._stationNames[st.id] = name;
                   marker.setTooltipContent(name);
                   const isTransfer = transfers.has(key);
                   marker.getPopup().setContent(
@@ -1338,10 +1368,82 @@
         svg += `<circle class="station" cx="${pos.x}" cy="${pos.y}" r="${radius}" stroke="${strokeColor}" />`;
       });
 
-      // Draw station labels
+      // Draw station labels — collision-aware placement
+      // ─────────────────────────────────────────────────────────────────────────
+      // We estimate each label's bounding box and try 8 candidate positions
+      // around the station dot. We place the label at the first candidate that
+      // doesn't overlap any already-placed label, falling back to the least-
+      // overlapping candidate if all clash.
+      const placedBoxes = []; // { x1, y1, x2, y2 }
+
+      function estimateLabelBox(cx, cy, text, fontSize, anchor, dotR) {
+        // Rough character width for the monospace-ish font at given size
+        const charW = fontSize * 0.56;
+        const tw = text.length * charW;
+        const th = fontSize + 2;
+        // anchor: [dx, dy] offset from dot centre to label baseline centre
+        // We use SVG text-anchor=middle so the box is centred on cx+dx
+        const lx = cx + anchor[0];
+        const ly = cy + anchor[1]; // baseline y
+        return { x1: lx - tw / 2 - 2, y1: ly - th, x2: lx + tw / 2 + 2, y2: ly + 2 };
+      }
+
+      function boxOverlap(a, b) {
+        return a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+      }
+
+      function overlapArea(a, b) {
+        const ox = Math.max(0, Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1));
+        const oy = Math.max(0, Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1));
+        return ox * oy;
+      }
+
+      // Candidate [dx, dy] offsets — try in preference order
+      // (above-centre first, then right, left, below, diagonals)
+      function candidateAnchors(dotR) {
+        const g = dotR + 3; // gap between dot edge and label
+        return [
+          [0, -(g + 10)],   // above
+          [g + 30, 4],          // right
+          [-(g + 30), 4],        // left
+          [0, g + 14],     // below
+          [g + 26, -(g + 6)],    // upper-right
+          [-(g + 26), -(g + 6)], // upper-left
+          [g + 26, g + 10],     // lower-right
+          [-(g + 26), g + 10],   // lower-left
+        ];
+      }
+
       stationList.forEach(([key, pos]) => {
-        const label = pos.station.id.replace("st_", "");
-        svg += `<text class="station-label" x="${pos.x}" y="${pos.y - 14}" fill="#000">${label}</text>`;
+        const resolvedName = window._stationNames?.[pos.station.id];
+        const label = resolvedName || pos.station.id.replace("st_", "");
+        const isTransfer = pos.station.lines.length > 1;
+        const fontSize = isTransfer ? 10 : 9;
+        const fontWeight = isTransfer ? 700 : 600;
+        const fill = isTransfer ? "#c62828" : "#222";
+        const dotR = isTransfer ? 6 : 4;
+
+        const candidates = candidateAnchors(dotR);
+        let bestAnchor = candidates[0];
+        let bestScore = Infinity; // total overlap area (lower is better)
+
+        for (const anchor of candidates) {
+          const box = estimateLabelBox(pos.x, pos.y, label, fontSize, anchor, dotR);
+          let score = 0;
+          for (const placed of placedBoxes) score += overlapArea(box, placed);
+          if (score < bestScore) {
+            bestScore = score;
+            bestAnchor = anchor;
+            if (score === 0) break; // perfect — no need to check further
+          }
+        }
+
+        const finalBox = estimateLabelBox(pos.x, pos.y, label, fontSize, bestAnchor, dotR);
+        placedBoxes.push(finalBox);
+
+        const lx = pos.x + bestAnchor[0];
+        const ly = pos.y + bestAnchor[1];
+        svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="middle">${label}</text>`;
       });
 
       // Add SVG in-map legend (per-line, top-left)
