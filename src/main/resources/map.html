@@ -1,13 +1,48 @@
 <!doctype html>
-<html>
+<html lang="en">
 
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Map</title>
+  <title>Public Transport Planner</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
+    /* ── Design tokens ───────────────────────────────────────── */
+    :root {
+      --bg: #ffffff;
+      --bg-muted: #f8fafc;
+      --bg-hover: #f1f5f9;
+      --border: #e2e8f0;
+      --border-focus: #93c5fd;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --accent: #1d4ed8;
+      --accent-dark: #1e40af;
+      --accent-fg: #ffffff;
+      --danger: #dc2626;
+      --danger-bg: #fef2f2;
+      --danger-border: #fca5a5;
+      --success: #15803d;
+      --success-bg: #f0fdf4;
+      --success-border: #86efac;
+      --info-bg: #eff6ff;
+      --info-border: #bfdbfe;
+      --r: 5px;
+      --r-lg: 10px;
+      --shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.07);
+      --font: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --panel-w: 272px;
+    }
+
+    /* ── Reset ───────────────────────────────────────────────── */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
     html,
     body,
     #map {
@@ -16,82 +51,315 @@
       padding: 0;
     }
 
-    #map {
-      background: #ddd;
+    body {
+      font-family: var(--font);
+      color: var(--text);
     }
 
-    /* keep things simple and avoid heavy transforms */
+    #map {
+      background: #e8eaed;
+    }
+
     .leaflet-container {
       -webkit-transform: none !important;
       transform: none !important;
     }
 
-    /* floating controls */
+    /* ── Panel shell ─────────────────────────────────────────── */
     #controls {
       position: absolute;
       top: 12px;
       left: 12px;
-      background: rgba(255, 255, 255, 0.95);
-      padding: 8px;
-      border-radius: 6px;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      width: var(--panel-w);
+      background: var(--bg);
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
       z-index: 1000;
-      font-family: Arial, Helvetica, sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
       font-size: 13px;
     }
 
-    #controls input[type="range"] {
-      width: 160px;
+    /* ── Panel header ────────────────────────────────────────── */
+    #panel-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 13px 16px 11px;
+      background: var(--accent);
+      color: var(--accent-fg);
+      flex-shrink: 0;
     }
 
-    #controls input[type="text"] {
-      width: 70px;
+    #panel-header .header-icon {
+      flex-shrink: 0;
+      opacity: 0.9;
     }
 
-    #drawBtn {
-      margin-left: 8px;
-      padding: 4px 8px;
+    #panel-header h1 {
+      margin: 0;
+      font-size: 13.5px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.25;
     }
 
-    #areaLabel {
-      display: inline-block;
-      margin-left: 8px;
-      font-weight: bold;
+    #panel-header p {
+      margin: 2px 0 0;
+      font-size: 10.5px;
+      opacity: 0.72;
+      line-height: 1.3;
     }
 
-    #message {
-      display: inline-block;
-      margin-left: 12px;
-      color: red;
-      font-weight: bold;
+    /* ── Sections & dividers ─────────────────────────────────── */
+    .panel-section {
+      padding: 11px 14px;
     }
 
-    #centroid {
-      display: inline-block;
-      margin-left: 8px;
+    .panel-section:last-child {
+      padding-bottom: 14px;
     }
 
-    #neighbourhoodInfo {
+    .panel-divider {
+      height: 1px;
+      background: var(--border);
+    }
+
+    .section-label {
       display: block;
-      margin-top: 6px;
-      font-size: 13px;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 9px;
     }
 
-    #neighbourhoodInfo pre {
+    /* ── Zoom controls ───────────────────────────────────────── */
+    .zoom-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #zoomRange {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+    }
+
+    #zoomRange::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 0 1.5px var(--accent);
+      cursor: pointer;
+      transition: transform 100ms var(--ease);
+    }
+
+    #zoomRange::-webkit-slider-thumb:hover {
+      transform: scale(1.25);
+    }
+
+    #zoomRange::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 0 1.5px var(--accent);
+      cursor: pointer;
+    }
+
+    #zoomValue {
+      width: 50px;
+      padding: 5px 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      font-size: 12px;
+      font-family: var(--font);
+      color: var(--text);
+      text-align: center;
+      outline: none;
+      transition: border-color 100ms var(--ease), box-shadow 100ms var(--ease);
+      background: var(--bg);
+    }
+
+    #zoomValue:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.35);
+    }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 7px 11px;
+      border-radius: var(--r);
+      border: 1px solid transparent;
+      font-family: var(--font);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+      transition: background 120ms var(--ease), color 120ms var(--ease),
+        border-color 120ms var(--ease), box-shadow 120ms var(--ease);
+    }
+
+    .btn:focus-visible {
+      outline: 2px solid var(--border-focus);
+      outline-offset: 2px;
+    }
+
+    .btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-fg);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-dark);
+    }
+
+    .btn-primary:active {
+      background: #1e3a8a;
+    }
+
+    .btn-secondary {
+      background: var(--bg-muted);
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-hover);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+      border-color: var(--border);
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-hover);
+      color: var(--text);
+    }
+
+    /* draw active → cancel style */
+    body.is-drawing #drawBtn {
+      background: var(--danger-bg);
+      color: var(--danger);
+      border-color: var(--danger-border);
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn-group .btn {
+      flex: 1;
+    }
+
+    /* ── Stats ───────────────────────────────────────────────── */
+    .stat-row {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 3px 0;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 50px;
+      flex-shrink: 0;
+    }
+
+    .stat-value {
+      font-size: 12px;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+
+    .stat-unit {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* ── Status message ──────────────────────────────────────── */
+    #message {
+      display: none;
+      margin: 0 14px 12px;
+      padding: 7px 10px;
+      border-radius: var(--r);
+      font-size: 11px;
+      line-height: 1.5;
+      border: 1px solid var(--info-border);
+      background: var(--info-bg);
+      color: var(--accent);
+      word-break: break-word;
+    }
+
+    #message:not(:empty) {
+      display: block;
+    }
+
+    /* ── Neighbourhood info ──────────────────────────────────── */
+    #neighProps {
+      margin: 4px 0 0;
       white-space: pre-wrap;
-      max-width: 480px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--font);
+      max-height: 90px;
+      overflow-y: auto;
+      line-height: 1.55;
     }
 
-    /* density label for circle tooltips */
+    /* ── In-map overlays ─────────────────────────────────────── */
     .density-label {
-      background: rgba(255, 255, 255, 0.85) !important;
-      color: #000 !important;
-      padding: 2px 6px !important;
+      background: rgba(255, 255, 255, 0.93) !important;
+      color: var(--text) !important;
+      padding: 2px 5px !important;
       border-radius: 4px !important;
       font-weight: 700 !important;
-      font-size: 12px !important;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25) !important;
+      font-size: 11px !important;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18) !important;
       pointer-events: none !important;
+      border: 1px solid var(--border) !important;
+    }
+
+    .line-label div {
+      font-family: var(--font) !important;
+      font-size: 11px !important;
+      font-weight: 700 !important;
+      padding: 3px 7px !important;
+      border-radius: 4px !important;
+      box-shadow: 0 1px 5px rgba(0, 0, 0, 0.28) !important;
+      letter-spacing: 0.01em;
     }
   </style>
 </head>
@@ -99,31 +367,78 @@
 <body>
   <div id="map"></div>
 
-  <div id="controls">
-    Zoom:
-    <input id="zoomRange" type="range" min="1" max="19" step="0.01" value="10" />
-    <input id="zoomValue" type="text" value="10" />
-    <button id="drawBtn">Draw</button>
-    <button id="suggestBtn" disabled style="margin-left: 8px">
-      Suggestions
-    </button>
-    <button id="hideSuggestBtn" disabled style="margin-left: 4px">
-      Hide Suggestions
-    </button>
-    <button id="tubeMapBtn" disabled style="margin-left: 8px">
-      Tube Map
-    </button>
-    <span id="areaLabel">Area: <span id="areaDisplay">—</span> km²</span>
-    <span id="message"></span>
-    <div id="centroidRow">
-      Center: <span id="centroid">—</span>
-      <span id="density" style="margin-left: 12px; font-weight: bold"></span>
+  <aside id="controls">
+
+    <!-- Header -->
+    <div id="panel-header">
+      <svg class="header-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="10" rx="2" />
+        <path d="M3 11V8a9 9 0 0 1 18 0v3" />
+        <circle cx="7.5" cy="16" r="1" />
+        <circle cx="16.5" cy="16" r="1" />
+        <path d="M7.5 11V8M16.5 11V8" />
+      </svg>
+      <div>
+        <h1>Transport Planner</h1>
+        <p>Population-based route analysis</p>
+      </div>
     </div>
-    <div id="neighbourhoodInfo">
-      Neighbourhood:
+
+    <!-- Zoom -->
+    <div class="panel-section">
+      <span class="section-label">Zoom</span>
+      <div class="zoom-row">
+        <input id="zoomRange" type="range" min="1" max="19" step="0.01" value="10" />
+        <input id="zoomValue" type="text" value="10" />
+      </div>
+    </div>
+
+    <div class="panel-divider"></div>
+
+    <!-- Analysis actions -->
+    <div class="panel-section">
+      <span class="section-label">Analysis</span>
+      <div class="btn-group">
+        <button id="drawBtn" class="btn btn-primary">Draw Area</button>
+        <button id="suggestBtn" class="btn btn-secondary" disabled>Routes</button>
+      </div>
+      <div class="btn-group" style="margin-top:6px;">
+        <button id="hideSuggestBtn" class="btn btn-ghost" disabled>Hide Routes</button>
+        <button id="tubeMapBtn" class="btn btn-ghost" disabled>Tube Map</button>
+      </div>
+    </div>
+
+    <div class="panel-divider"></div>
+
+    <!-- Selection stats -->
+    <div class="panel-section" id="stats-section">
+      <span class="section-label">Selection</span>
+      <div class="stat-row">
+        <span class="stat-label">Area</span>
+        <span class="stat-value" id="areaDisplay">—</span>
+        <span class="stat-unit">km²</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Centre</span>
+        <span class="stat-value" id="centroid">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Density</span>
+        <span class="stat-value" id="density"></span>
+      </div>
+    </div>
+
+    <!-- Status message -->
+    <div id="message"></div>
+
+    <!-- Neighbourhood -->
+    <div class="panel-section" id="neighbourhoodInfo">
+      <span class="section-label">Neighbourhood</span>
       <pre id="neighProps">—</pre>
     </div>
-  </div>
+
+  </aside>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
@@ -300,38 +615,23 @@
       messageEl.textContent = "";
       drawMode = true;
       drawBtn.textContent = "Cancel Draw";
-      try {
-        map.dragging.disable();
-      } catch (e) { }
-      try {
-        map.scrollWheelZoom.disable();
-      } catch (e) { }
-      try {
-        map.touchZoom.disable();
-      } catch (e) { }
-      activeDrawer = new L.Draw.Polygon(
-        map,
-        drawControl.options.draw.polygon ? {} : {},
-      );
+      document.body.classList.add('is-drawing');
+      try { map.dragging.disable(); } catch (e) { }
+      try { map.scrollWheelZoom.disable(); } catch (e) { }
+      try { map.touchZoom.disable(); } catch (e) { }
+      activeDrawer = new L.Draw.Polygon(map, drawControl.options.draw.polygon ? {} : {});
       activeDrawer.enable();
     }
 
     function disableDraw() {
       drawMode = false;
-      drawBtn.textContent = "Draw";
-      try {
-        map.dragging.enable();
-      } catch (e) { }
-      try {
-        map.scrollWheelZoom.enable();
-      } catch (e) { }
-      try {
-        map.touchZoom.enable();
-      } catch (e) { }
+      drawBtn.textContent = "Draw Area";
+      document.body.classList.remove('is-drawing');
+      try { map.dragging.enable(); } catch (e) { }
+      try { map.scrollWheelZoom.enable(); } catch (e) { }
+      try { map.touchZoom.enable(); } catch (e) { }
       if (activeDrawer) {
-        try {
-          activeDrawer.disable();
-        } catch (e) { }
+        try { activeDrawer.disable(); } catch (e) { }
         activeDrawer = null;
       }
     }
@@ -664,10 +964,12 @@
               if (midIdx < latlngs.length) {
                 const midPoint = latlngs[midIdx];
                 const loopMarker = isLoop ? " ⭕" : "";
+                const tph = line.trains_per_hour || 0;
+                const tphLabel = tph > 0 ? ` · ${tph}/hr` : "";
                 L.marker(midPoint, {
                   icon: L.divIcon({
                     className: "line-label",
-                    html: `<div style="background:${color};color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;font-size:12px;">${line.id}${loopMarker}</div>`,
+                    html: `<div style="background:${color};color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;font-size:12px;">${line.id}${loopMarker}${tphLabel}</div>`,
                   }),
                 }).addTo(suggestionsLayer);
               }
@@ -716,7 +1018,8 @@
             const lineSummary = data.lines
               .map((l) => {
                 const loopMarker = l.isLoop ? " ⭕" : "";
-                return `${l.id} (${l.type})${loopMarker}`;
+                const tphText = l.trains_per_hour ? ` ${l.trains_per_hour}tph` : "";
+                return `${l.id} (${l.type})${loopMarker}${tphText}`;
               })
               .join(", ");
             messageEl.textContent = `Showing ${data.lines.length} metro lines: ${lineSummary}`;
@@ -813,22 +1116,56 @@
 
       // Generate SVG
       let svg = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Metro Network - Schematic Map</title>
+  <title>Metro Network — Schematic Map</title>
   <style>
+    :root {
+      --bg: #ffffff;
+      --bg-page: #f0f2f5;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --accent: #1d4ed8;
+      --r: 6px;
+      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
     body {
-      font-family: 'Arial', sans-serif;
+      font-family: var(--font);
       margin: 0;
-      padding: 20px;
-      background: #f5f5f5;
+      padding: 24px;
+      background: var(--bg-page);
+      color: var(--text);
     }
-    svg {
-      background: white;
-      border: 1px solid #ddd;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      margin-bottom: 20px;
     }
+    header h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    header p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .map-wrap {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.09);
+      overflow: hidden;
+      display: inline-block;
+    }
+    svg { display: block; }
     .line {
       stroke-width: 4;
       fill: none;
@@ -837,39 +1174,64 @@
     }
     .station {
       fill: white;
-      stroke-width: 2;
+      stroke-width: 2.5;
     }
     .station-label {
-      font-size: 11px;
-      font-weight: bold;
+      font-family: var(--font);
+      font-size: 10px;
+      font-weight: 600;
       text-anchor: middle;
-      dominant-baseline: middle;
       pointer-events: none;
+      fill: var(--text);
     }
-    .title {
-      font-size: 24px;
-      font-weight: bold;
-      margin-bottom: 15px;
-    }
-    .legend {
-      margin-top: 15px;
-      font-size: 12px;
+    .legend-section {
+      margin-top: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
     }
     .legend-item {
-      display: inline-block;
-      margin-right: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 5px 10px;
+      font-size: 12px;
     }
-    .legend-color {
-      display: inline-block;
-      width: 20px;
-      height: 3px;
-      margin-right: 6px;
-      vertical-align: middle;
+    .legend-swatch {
+      width: 24px;
+      height: 4px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .legend-name { font-weight: 600; color: var(--text); }
+    .legend-tph  { color: var(--text-muted); }
+    .type-legend {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .type-legend b { color: var(--text); }
+    .note {
+      margin-top: 14px;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      max-width: 680px;
     }
   </style>
 </head>
 <body>
-  <div class="title">Metro Network Schematic Map</div>
+  <header>
+    <h1>Metro Network — Schematic Map</h1>
+    <p>Algorithmically generated from population density</p>
+  </header>
+  <div class="map-wrap">
   <svg width="${svgWidth}" height="${svgHeight}">`;
 
       // Draw lines (each line gets a distinct color)
@@ -893,6 +1255,17 @@
         }
 
         svg += `<path class="line" d="${pathD}" stroke="${color}" opacity="0.8" />`;
+
+        // Draw trains-per-hour badge at the mid-station of each line
+        const tphMidKey = lineMap.stationKeys[Math.floor(lineMap.stationKeys.length / 2)];
+        const tphMidPos = stationPositions.get(tphMidKey);
+        if (tphMidPos && lineMap.line.trains_per_hour > 0) {
+          const tphVal = lineMap.line.trains_per_hour;
+          const bx = tphMidPos.x;
+          const by = tphMidPos.y + 14;
+          svg += `<rect x="${bx - 24}" y="${by - 10}" width="48" height="16" rx="5" fill="${color}" opacity="0.88"/>`;
+          svg += `<text x="${bx}" y="${by + 3}" font-size="9" font-weight="bold" fill="white" text-anchor="middle">${tphVal} tph</text>`;
+        }
       });
 
       // Draw stations (order matters: draw on top)
@@ -910,31 +1283,47 @@
         svg += `<text class="station-label" x="${pos.x}" y="${pos.y - 14}" fill="#000">${label}</text>`;
       });
 
-      // Add legend (per-line colors)
-      svg += `<g>
-        <text x="20" y="30" font-size="12" font-weight="bold">Legend:</text>`;
-      let legendY = 50;
+      // Add SVG in-map legend (per-line, top-left)
+      svg += `<g>`;
+      let legendY = 22;
       lineStationMaps.forEach((lm, i) => {
         const color = lineColors[lm.line.id] || "#999";
-        const labelTxt = `${lm.line.id} (${lm.line.type})`;
-        svg += `<line x1="20" y1="${legendY}" x2="40" y2="${legendY}" stroke="${color}" stroke-width="3" />`;
-        svg += `<text x="50" y="${legendY + 5}" font-size="11">${labelTxt}</text>`;
-        legendY += 20;
+        const tph = lm.line.trains_per_hour || 0;
+        const tphStr = tph > 0 ? ` — ${tph} tph` : "";
+        const labelTxt = `${lm.line.id} (${lm.line.type})${tphStr}`;
+        svg += `<line x1="14" y1="${legendY}" x2="36" y2="${legendY}" stroke="${color}" stroke-width="3" />`;
+        svg += `<text x="42" y="${legendY + 4}" font-family="'Segoe UI',system-ui,sans-serif" font-size="10" fill="#0f172a">${labelTxt}</text>`;
+        legendY += 18;
       });
       svg += `</g>`;
 
-      svg += `</svg>
-  <div class="legend">
-    <div class="legend-item"><span class="legend-color" style="background: #d62728;"></span><strong>Radial Trunk:</strong> Main arterial lines</div>
-    <div class="legend-item"><span class="legend-color" style="background: #ff7f0e;"></span><strong>Core Distributor:</strong> Inner-city network</div>
-    <div class="legend-item"><span class="legend-color" style="background: #2ca02c;"></span><strong>Orbital:</strong> Ring/circumferential</div>
-  </div>
-  <p style="margin-top: 20px; font-size: 12px; color: #666;">
-    <strong>Note:</strong> This is a schematic diagram. Station positions are based on geographic coordinates but simplified for clarity.
-    Larger circles indicate transfer stations (served by multiple lines).
-  </p>
-</body>
-</html>`;
+      svg += `</svg></div>`;
+
+      // Per-line card legend below the map
+      svg += `<div class="legend-section">`;
+      lineStationMaps.forEach((lm) => {
+        const color = lineColors[lm.line.id] || "#999";
+        const tph = lm.line.trains_per_hour || 0;
+        svg += `<div class="legend-item">`;
+        svg += `<span class="legend-swatch" style="background:${color};"></span>`;
+        svg += `<span class="legend-name">${lm.line.id}</span>`;
+        svg += `<span style="color:#64748b;font-size:11px;">${lm.line.type.replace('_', ' ')}</span>`;
+        if (tph > 0) svg += `<span class="legend-tph">&middot; ${tph}&thinsp;tph</span>`;
+        svg += `</div>`;
+      });
+      svg += `</div>`;
+
+      svg += `<div class="type-legend">`;
+      svg += `<span><b style="color:#d62728">—</b> Radial Trunk</span>`;
+      svg += `<span><b style="color:#ff7f0e">—</b> Core Distributor</span>`;
+      svg += `<span><b style="color:#2ca02c">—</b> Orbital</span>`;
+      svg += `<span>● Transfer station &nbsp;○ End station</span>`;
+      svg += `</div>`;
+
+      svg += `<p class="note"><strong>Note:</strong> Schematic diagram — geographic positions simplified for clarity.
+    Larger circles = transfer stations. <strong>tph</strong> values are demand-weighted suggestions (4–30 tph,
+    snapped to even headways).</p>`;
+      svg += `</body></html>`;
 
       // Open in new tab
       const blob = new Blob([svg], { type: "text/html" });
