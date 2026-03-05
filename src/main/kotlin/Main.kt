@@ -88,16 +88,18 @@ fun main() {
     // Proxy endpoint (existing)
     server.createContext("/proxy") { exchange ->
         try {
-            val query = exchange.requestURI.query ?: ""
+            // Use rawQuery so percent-encoded '&' (%26) inside a URL param isn't split prematurely.
+            // Each param value is then individually URLDecoder-decoded below.
+            val query = exchange.requestURI.rawQuery ?: ""
             val params =
                 query
                     .split("&")
                     .mapNotNull { part ->
                         val idx = part.indexOf('=')
-                        if (idx <= 0) null else part.substring(0, idx) to part.substring(idx + 1)
+                        if (idx <= 0) null else part.substring(0, idx) to URLDecoder.decode(part.substring(idx + 1), "UTF-8")
                     }.toMap()
 
-            val rawUrl = params["url"]?.let { URLDecoder.decode(it, "UTF-8") }
+            val rawUrl = params["url"]
             if (rawUrl == null || rawUrl.isBlank()) {
                 val msg = "Missing 'url' query parameter"
                 exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
@@ -106,8 +108,8 @@ fun main() {
             }
 
             var target = rawUrl
-            val lat = params["lat"]?.let { URLDecoder.decode(it, "UTF-8") }
-            val lon = params["lon"]?.let { URLDecoder.decode(it, "UTF-8") }
+            val lat = params["lat"]
+            val lon = params["lon"]
             if (lat != null && lon != null) {
                 target = target.replace("{lat}", lat).replace("{lon}", lon)
             }
@@ -289,6 +291,10 @@ fun main() {
                 // use z as a density-like value; scale to a nominal population estimate
                 val pop = max(1.0, z * 1000.0)
                 val jobs = pop * 0.2
+                // Enrich with PTAL accessibility data (London zones only; fallback to 1.0 outside London)
+                val ptal = org.lsoffice.PtalLookup.nearest(x, y)
+                val socioWeight = if (ptal != null) org.lsoffice.PtalLookup.ptaiToSocioWeight(ptal.avgPtai2015) else 1.0
+                val activityVal = if (ptal != null) org.lsoffice.PtalLookup.ptaiToActivity(ptal.avgPtai2015) else 0.0
                 zones.add(
                     org.lsoffice.Zone(
                         "z$idx",
@@ -296,9 +302,9 @@ fun main() {
                         y,
                         pop,
                         jobs,
-                        activity = 0.0,
+                        activity = activityVal,
                         growthForecast = 1.0,
-                        socioeconomicWeight = 1.0,
+                        socioeconomicWeight = socioWeight,
                         zoningAllowsGrowth = true,
                     ),
                 )
@@ -415,10 +421,18 @@ fun main() {
                 return@createContext
             }
 
+            // Scale each grid point's density value by its PTAL demand weight
+            // (London points get a real PTAL multiplier; non-London points keep their original value)
+            val enrichedPoints =
+                gridPoints.map { gp ->
+                    val weight = org.lsoffice.PtalLookup.demandWeight(gp.lon, gp.lat)
+                    if (weight != 1.0) gp.copy(value = gp.value * weight) else gp
+                }
+
             val builder = MetroBuilder(BuilderParams(capitalBudget = 1_000_000_000.0, operatingBudgetPerYear = 50_000_000.0))
             val lines =
                 builder.buildNaturalNetworkFromGrid(
-                    gridPoints,
+                    enrichedPoints,
                     minStationValue = 0.0,
                     minCorridorLengthMeters = 2000.0,
                     minStationsPerLine = 3,
@@ -450,6 +464,7 @@ fun main() {
                 sb.append("\"isLoop\":").append(l.isLoop).append(',')
                 sb.append("\"length_m\":").append(l.lengthMeters).append(',')
                 sb.append("\"cost\":").append(l.cost).append(',')
+                sb.append("\"trains_per_hour\":").append(l.trainsPerHour).append(',')
                 sb.append("\"stations\":[")
                 l.stations.forEachIndexed { j: Int, st: org.lsoffice.Station ->
                     if (j > 0) sb.append(',')

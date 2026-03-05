@@ -361,6 +361,24 @@
       box-shadow: 0 1px 5px rgba(0, 0, 0, 0.28) !important;
       letter-spacing: 0.01em;
     }
+
+    /* Station name labels */
+    .station-label {
+      background: rgba(255, 255, 255, 0.93) !important;
+      border: 1px solid rgba(0, 0, 0, 0.2) !important;
+      border-radius: 3px !important;
+      padding: 2px 5px !important;
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      color: #1a1a2e !important;
+      white-space: nowrap !important;
+      pointer-events: none !important;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+    }
+
+    .station-label.leaflet-tooltip-right::before {
+      display: none !important;
+    }
   </style>
 </head>
 
@@ -996,11 +1014,54 @@
                 );
                 m.bindTooltip(`${st.id}`, {
                   permanent: true,
-                  direction: "center",
+                  direction: "right",
+                  className: "station-label",
+                  offset: [8, 0],
                 });
                 created[key] = m;
               });
             });
+
+            // Reverse-geocode each unique station using OSM Nominatim via the local proxy.
+            // Names resolve progressively (1.1 s between requests, Nominatim usage policy).
+            (async () => {
+              async function fetchAreaName(lat, lon) {
+                try {
+                  const nomUrl = encodeURIComponent(
+                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&zoom=15&format=json&accept-language=en`
+                  );
+                  const res = await fetch(`/proxy?url=${nomUrl}`);
+                  if (!res.ok) return null;
+                  const d = await res.json();
+                  const a = d.address || {};
+                  return (
+                    a.neighbourhood || a.suburb || a.quarter ||
+                    a.city_district || a.hamlet || a.village ||
+                    a.town || a.city || d.name || null
+                  );
+                } catch (e) {
+                  return null;
+                }
+              }
+
+              for (const [key, st] of allStations) {
+                const marker = created[key];
+                if (!marker) continue;
+                const name = await fetchAreaName(st.lat, st.lon);
+                if (name) {
+                  marker.setTooltipContent(name);
+                  const isTransfer = transfers.has(key);
+                  marker.getPopup().setContent(
+                    `<strong>${name}</strong><br/>` +
+                    `ID: ${st.id}` +
+                    `${isTransfer ? '<br/>🔄 Interchange' : ''}<br/>` +
+                    `Value: ${Number(st.value || 0).toLocaleString()}<br/>` +
+                    `${Number(st.lon).toFixed(6)}, ${Number(st.lat).toFixed(6)}`
+                  );
+                }
+                await new Promise((r) => setTimeout(r, 1100));
+              }
+            })();
 
             // Fit map
             if (allLineBounds.length > 0) {

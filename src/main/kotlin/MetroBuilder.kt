@@ -71,6 +71,7 @@ data class Line(
     val cost: Double,
     val type: LineType = LineType.RADIAL_TRUNK,
     val isLoop: Boolean = false,
+    val trainsPerHour: Int = 0,
 )
 
 // Hub-to-hub path analysis
@@ -583,8 +584,38 @@ class MetroBuilder(
         points: List<GridPoint>,
         indices: List<Int>,
     ): List<Int> {
-        // Fallback: sort by latitude; could be replaced with PCA in future
-        return indices.sortedBy { points[it].lat }
+        if (indices.size <= 1) return indices
+        // True PCA: find the dominant axis of the cluster and sort by projection onto it.
+        // This ensures E-W clusters order left-to-right, NW-SE clusters order along their
+        // diagonal, etc. — instead of the naive latitude sort that was always north-to-south.
+        val meanLon = indices.sumOf { points[it].lon } / indices.size
+        val meanLat = indices.sumOf { points[it].lat } / indices.size
+        var cxx = 0.0
+        var cxy = 0.0
+        var cyy = 0.0
+        for (i in indices) {
+            val dx = points[i].lon - meanLon
+            val dy = points[i].lat - meanLat
+            cxx += dx * dx
+            cxy += dx * dy
+            cyy += dy * dy
+        }
+        // Analytical larger eigenvalue of the 2x2 covariance matrix [[cxx,cxy],[cxy,cyy]]
+        val trace = cxx + cyy
+        val disc = sqrt(max(0.0, (cxx - cyy).pow(2.0) + 4.0 * cxy * cxy)) / 2.0
+        val lambda = trace / 2.0 + disc
+        // Corresponding eigenvector (the principal axis direction)
+        val ex = cxy
+        val ey = lambda - cxx
+        val mag = sqrt(ex * ex + ey * ey)
+        val px = if (mag > 1e-10) ex / mag else 1.0
+        val py = if (mag > 1e-10) ey / mag else 0.0
+        // Sort each point by its scalar projection onto the principal axis
+        return indices.sortedBy { i ->
+            val dx = points[i].lon - meanLon
+            val dy = points[i].lat - meanLat
+            dx * px + dy * py
+        }
     }
 
     // Helper: compute loopiness metric (Improvement 1)
@@ -1035,6 +1066,35 @@ class MetroBuilder(
     }
 
     // Natural Metro Network Formation — Corridor-First Implementation
+
+    /**
+     * Estimate the suggested trains per hour for each line by normalising the
+     * average per-station catchment (log-scaled to reduce skew) across all lines
+     * to a [4, 30] tph range, then snapping to the nearest even number (standard
+     * headway increment — 2 min, 4 min, …).
+     */
+    fun computeTrainsPerHour(lines: List<Line>): List<Line> {
+        if (lines.isEmpty()) return lines
+        // Average log-scaled catchment across stations on each line
+        val scores =
+            lines.map { line ->
+                line.stations.sumOf { ln(1.0 + it.catchmentPopulation) } /
+                    line.stations.size.coerceAtLeast(1)
+            }
+        val minScore = scores.minOrNull() ?: return lines
+        val maxScore = scores.maxOrNull() ?: return lines
+        val scoreRange = (maxScore - minScore).coerceAtLeast(1e-9)
+        val minTph = 4
+        val maxTph = 30
+        return lines.zip(scores).map { (line, score) ->
+            val t = (score - minScore) / scoreRange
+            val rawTph = minTph + round(t * (maxTph - minTph)).toInt()
+            // Snap to nearest even number for realistic headways
+            val tph = ((rawTph + 1) / 2 * 2).coerceIn(minTph, maxTph)
+            line.copy(trainsPerHour = tph)
+        }
+    }
+
     fun buildNaturalNetworkFromGrid(
         gridPoints: List<GridPoint>,
         walkRadiusMeters: Double = 800.0,
@@ -1174,7 +1234,9 @@ class MetroBuilder(
                     val mag2 = sqrt(d2x * d2x + d2y * d2y)
                     val cosTheta = if (mag1 * mag2 > 0) dot / (mag1 * mag2) else 1.0
 
-                    if (cosTheta > 0.5 && demand > bestDemand) {
+                    // 0.65 ≈ cos(49°): tight enough to prevent arcs curving back around,
+                    // while still allowing gentle bends along real corridor geometry.
+                    if (cosTheta > 0.65 && demand > bestDemand) {
                         bestDemand = demand
                         bestNext = next
                     }
@@ -1205,7 +1267,7 @@ class MetroBuilder(
                     val mag2 = sqrt(d2x * d2x + d2y * d2y)
                     val cosTheta = if (mag1 * mag2 > 0) dot / (mag1 * mag2) else 1.0
 
-                    if (cosTheta > 0.5 && demand > bestDemand) {
+                    if (cosTheta > 0.65 && demand > bestDemand) {
                         bestDemand = demand
                         bestNext = next
                     }
@@ -1465,35 +1527,31 @@ class MetroBuilder(
                             }
                         }
                     }
+                    // Enforce interchange globally wherever two corridors come within threshold.
+                    // Previously this was gated on the crossing being inside the core radius,
+                    // which silently skipped all suburban crossings. Now any close approach forces
+                    // a shared node so passengers can change trains network-wide.
                     if (bestDist <= interchangeThreshold) {
-                        // require interchange only if within core band (or inner ring)
-                        val midLon = (places[bestAi].lon + places[bestBj].lon) / 2.0
-                        val midLat = (places[bestAi].lat + places[bestBj].lat) / 2.0
-                        val midDistToCenter = haversineMeters(midLon, midLat, centerLon, centerLat)
-                        if (midDistToCenter <= coreRadius * 1.2) {
-                            // insert the place index from chainA into chainB (if missing)
-                            val insertIdx = bestAi
-                            if (!chainB.contains(insertIdx)) {
-                                // find position in chainB near bestBj
-                                val pos = corridors[b].first.indexOf(bestBj)
-                                if (pos >= 0) {
-                                    val newChain = corridors[b].first.toMutableList()
-                                    // insert after pos to maintain monotonic order
-                                    newChain.add(pos + 1, insertIdx)
-                                    corridors[b] = newChain.toList() to corridors[b].second
-                                    dbg("  ✓ Forced interchange: inserted place $insertIdx into corridor $b to connect with corridor $a")
-                                }
+                        // Insert node from chainA into chainB at the position nearest bestBj
+                        val insertIdx = bestAi
+                        if (!chainB.contains(insertIdx)) {
+                            val pos = corridors[b].first.indexOf(bestBj)
+                            if (pos >= 0) {
+                                val newChain = corridors[b].first.toMutableList()
+                                newChain.add(pos + 1, insertIdx)
+                                corridors[b] = newChain.toList() to corridors[b].second
+                                dbg("  ✓ Interchange (${"%.0f".format(bestDist)}m): place $insertIdx -> corridor $b")
                             }
-                            // also ensure chainA contains bestBj (symmetric)
-                            val insertIdxB = bestBj
-                            if (!chainA.contains(insertIdxB)) {
-                                val posA = corridors[a].first.indexOf(bestAi)
-                                if (posA >= 0) {
-                                    val newChainA = corridors[a].first.toMutableList()
-                                    newChainA.add(posA + 1, insertIdxB)
-                                    corridors[a] = newChainA.toList() to corridors[a].second
-                                    dbg("  ✓ Forced interchange: inserted place $insertIdxB into corridor $a to connect with corridor $b")
-                                }
+                        }
+                        // Symmetric: ensure chainA also contains bestBj
+                        val insertIdxB = bestBj
+                        if (!chainA.contains(insertIdxB)) {
+                            val posA = corridors[a].first.indexOf(bestAi)
+                            if (posA >= 0) {
+                                val newChainA = corridors[a].first.toMutableList()
+                                newChainA.add(posA + 1, insertIdxB)
+                                corridors[a] = newChainA.toList() to corridors[a].second
+                                dbg("  ✓ Interchange (${"%.0f".format(bestDist)}m): place $insertIdxB -> corridor $a")
                             }
                         }
                     }
@@ -1664,6 +1722,56 @@ class MetroBuilder(
             }
 
             if (finalizedNodes.size >= 2) {
+                // Anti-U-turn trim: if the finalized chain folds back on its own overall bearing
+                // (a "mini-circle" that isn't fully closed), prune the reversing tail and then head.
+                // Threshold 0.55: a perfectly straight line scores 1.0; a true circle scores ~0.0;
+                // 0.55 catches chains that arc more than ~120° without fully closing.
+                if (lineType != LineType.ORBITAL && finalizedNodes.size > minStationsPerLine) {
+                    val preTrimStraightness = computeLoopiness(finalizedNodes, places)
+                    if (preTrimStraightness < 0.55) {
+                        // Overall bearing vector: first station -> last station
+                        val odx = places[finalizedNodes.last()].lon - places[finalizedNodes.first()].lon
+                        val ody = places[finalizedNodes.last()].lat - places[finalizedNodes.first()].lat
+
+                        // Prune TAIL nodes whose step opposes the overall direction
+                        while (finalizedNodes.size > minStationsPerLine) {
+                            val last = finalizedNodes.last()
+                            val prev2 = finalizedNodes[finalizedNodes.size - 2]
+                            val sdx = places[last].lon - places[prev2].lon
+                            val sdy = places[last].lat - places[prev2].lat
+                            if (sdx * odx + sdy * ody < 0.0) {
+                                finalizedNodes.removeAt(finalizedNodes.size - 1)
+                                dbg("  ✂ Anti-U-turn tail: removed node $last")
+                            } else {
+                                break
+                            }
+                        }
+
+                        // Recompute overall direction, then prune HEAD nodes the same way
+                        if (finalizedNodes.size > minStationsPerLine) {
+                            val odx2 = places[finalizedNodes.last()].lon - places[finalizedNodes.first()].lon
+                            val ody2 = places[finalizedNodes.last()].lat - places[finalizedNodes.first()].lat
+                            while (finalizedNodes.size > minStationsPerLine) {
+                                val first = finalizedNodes.first()
+                                val next2 = finalizedNodes[1]
+                                val sdx = places[next2].lon - places[first].lon
+                                val sdy = places[next2].lat - places[first].lat
+                                if (sdx * odx2 + sdy * ody2 < 0.0) {
+                                    finalizedNodes.removeAt(0)
+                                    dbg("  ✂ Anti-U-turn head: removed node $first")
+                                } else {
+                                    break
+                                }
+                            }
+                        }
+                        dbg(
+                            "  Anti-U-turn trim: straightness ${"%.2f".format(
+                                preTrimStraightness,
+                            )} -> ${"%.2f".format(computeLoopiness(finalizedNodes, places))}",
+                        )
+                    }
+                }
+
                 // Improvements 1–3: Detect and handle circularity
                 val loopiness = computeLoopiness(finalizedNodes, places)
                 var isCircular = loopiness < 0.15
@@ -1791,6 +1899,103 @@ class MetroBuilder(
         dbg("  Violations: ${fitnessReport.violationsFound.size}")
         dbg("  Metrics OK: ${fitnessReport.overallMetricsOK}")
 
-        return builtLines
+        // POST-BUILD: Snap interchange stations.
+        // When two lines have stations within 500 m of each other, replace both with a
+        // single shared station at the population-weighted midpoint. This produces a genuine
+        // shared node (one map dot carrying both line colours) not two nearly-coincident dots.
+        val snappedLines = snapInterchangeStations(builtLines, snapRadiusMeters = 500.0)
+
+        // POST-BUILD: Compute suggested trains per hour for each line
+        val linesWithTph = computeTrainsPerHour(snappedLines)
+        linesWithTph.forEach { line ->
+            dbg("  ${line.id}: ${line.trainsPerHour} trains/hr")
+        }
+
+        return linesWithTph
+    }
+
+    /**
+     * Post-build interchange snapping.
+     *
+     * For every pair of lines whose closest stations are within [snapRadiusMeters] of each
+     * other, replace both stations with a single shared interchange station placed at the
+     * population-weighted midpoint.  Shared station IDs carry the prefix "INT_" so the
+     * front-end can render them with a distinct interchange symbol.
+     *
+     * Multiple rounds are run so that 3- and 4-way interchanges converge correctly
+     * (round 1 merges A↔B and A↔C; round 2 then merges B↔C at the same point).
+     */
+    private fun snapInterchangeStations(
+        lines: List<Line>,
+        snapRadiusMeters: Double = 500.0,
+        rounds: Int = 3,
+    ): List<Line> {
+        val current = lines.toMutableList()
+
+        repeat(rounds) { round ->
+            var anySnapped = false
+            for (i in current.indices) {
+                for (j in i + 1 until current.size) {
+                    val stI = current[i].stations
+                    val stJ = current[j].stations
+
+                    // Find the closest cross-line station pair
+                    var bestDist = Double.MAX_VALUE
+                    var bestSi: Station? = null
+                    var bestSj: Station? = null
+                    for (si in stI) {
+                        for (sj in stJ) {
+                            if (si.id == sj.id) continue // already the same shared station
+                            val d = haversineMeters(si.lon, si.lat, sj.lon, sj.lat)
+                            if (d < bestDist) {
+                                bestDist = d
+                                bestSi = si
+                                bestSj = sj
+                            }
+                        }
+                    }
+
+                    if (bestDist > snapRadiusMeters || bestSi == null || bestSj == null) continue
+
+                    // Population-weighted midpoint
+                    val wI = bestSi.catchmentPopulation.coerceAtLeast(1.0)
+                    val wJ = bestSj.catchmentPopulation.coerceAtLeast(1.0)
+                    val wSum = wI + wJ
+                    val sharedLon = (bestSi.lon * wI + bestSj.lon * wJ) / wSum
+                    val sharedLat = (bestSi.lat * wI + bestSj.lat * wJ) / wSum
+                    // Preserve an existing INT_ id across rounds for stable convergence
+                    val sharedId =
+                        when {
+                            bestSi.id.startsWith("INT_") -> bestSi.id
+                            bestSj.id.startsWith("INT_") -> bestSj.id
+                            else -> "INT_${current[i].id}_${current[j].id}"
+                        }
+                    val shared = Station(sharedId, sharedLon, sharedLat, wSum)
+
+                    fun rebuildLine(
+                        line: Line,
+                        old: Station,
+                    ): Line {
+                        val newSt = line.stations.map { if (it.id == old.id) shared else it }
+                        val len =
+                            newSt
+                                .zipWithNext()
+                                .sumOf { (a, b) -> haversineMeters(a.lon, a.lat, b.lon, b.lat) }
+                        return line.copy(stations = newSt, lengthMeters = len)
+                    }
+
+                    current[i] = rebuildLine(current[i], bestSi)
+                    current[j] = rebuildLine(current[j], bestSj)
+                    anySnapped = true
+                    dbg(
+                        "  ✦ [r${round + 1}] Interchange snap: ${current[i].id} <-> ${current[j].id}" +
+                            " -> $sharedId (${"%.0f".format(bestDist)}m)",
+                    )
+                }
+            }
+            if (!anySnapped) return@repeat
+        }
+
+        return current
     }
 }
