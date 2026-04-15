@@ -1,46 +1,91 @@
 # PublicTransportationPlanner
 
-PublicTransportationPlanner is a small Kotlin-based utility to analyze geospatial population data and generate simple public-transport planning visualizations (map output). It reads CSV population/coordinate data, builds a basic transport model, and produces an HTML map and related outputs for exploration.
+PublicTransportationPlanner is a Kotlin-based web application that analyses geospatial population data and generates public-transport network suggestions and visualisations. It reads CSV population/coordinate data, builds a metro-style transport model using a gravity demand model and corridor classification algorithm, and serves an interactive HTML map via a built-in HTTP server.
 
-**Features**
+## Features
 
-- **Input:** Reads CSV population/coordinate files (example: `src/main/resources/gbr_pd_2020_1km_ASCII_XYZ.csv`).
-- **Output:** Produces `map.html` (visualization) and other derived artifacts.
-- **Metrics:** Calculates and displays average user journey metrics (travel time between all station pairs) using Dijkstra's algorithm. Results are displayed on the console.
-- **Implementation:** Command-line Kotlin application using Gradle build.
+- **Interactive map** – Serves `map.html` (Leaflet-based) on `http://localhost:5000` for exploring generated network proposals.
+- **Automatic network generation** – `MetroBuilder` clusters population grid cells, builds a demand graph, identifies corridor chains (radial trunks, core distributors, orbitals), and selects non-overlapping lines.
+- **PTAL enrichment** – `PtalLookup` provides Public Transport Accessibility Level data for Greater London (TfL PTAL 2015, ~4 835 LSOAs) to weight demand calculations.
+- **Population density lookup** – `/density` endpoint finds the nearest grid point in a CSV population dataset for any WGS84 coordinate.
+- **CORS proxy** – `/proxy` endpoint forwards external data requests (e.g. GitHub-hosted GeoJSON) to avoid browser CORS restrictions.
+- **Transport suggestions** – `/suggestions` endpoint returns proposed metro lines as GeoJSON for a given geographic polygon.
+- **Haversine distances** – All spatial calculations use accurate great-circle distances.
+- **Dijkstra journey metrics** – Average travel times across all station pairs are computed and logged.
 
-**Requirements**
+## Requirements
 
-- JDK 11 or newer
-- Gradle (wrapper included)
+- JDK 17 or newer (project targets JVM toolchain 23)
+- Gradle wrapper included – no separate Gradle installation needed
 
-**Quickstart**
+## Quickstart
 
-- Build: `./gradlew build`
-- Run: `./gradlew run` or run the fat jar under `build/libs` (if configured).
+```bash
+# Build
+./gradlew build
 
-If you prefer to run the compiled classes directly with the Gradle run task:
-
-```
+# Run (starts HTTP server on port 5000–5010)
 ./gradlew run
 ```
 
-**Project layout**
+Then open **http://localhost:5000** in your browser to view the interactive map.
 
-- `src/main/kotlin` : Kotlin source (entrypoint `Main.kt`, helper `MetroBuilder.kt`).
-- `src/main/resources` : Example input CSV and `map.html` template.
-- `build/` : Gradle build outputs.
+To run the packaged jar directly (after `./gradlew build`):
 
-**Usage notes**
+```bash
+java -jar build/libs/PublicTransportationPlanner-1.0-SNAPSHOT.jar
+```
 
-- Replace or provide CSV input files in `src/main/resources` or adjust the runtime arguments if `Main.kt` supports custom input paths.
-- After running, open the generated `map.html` in a browser to view the visualization.
+## API Endpoints
 
-**Development**
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /` | GET | Serves the interactive `map.html` visualisation |
+| `GET /density?lon=&lat=&max_m=` | GET | Nearest-neighbour population density lookup |
+| `GET /proxy?url=&lat=&lon=` | GET | CORS proxy for external data sources |
+| `GET /suggestions` | GET/POST | Returns proposed metro lines as GeoJSON |
 
-- Use the Gradle wrapper (`./gradlew`) to build and run locally.
-- Tests (if present) run with `./gradlew test`.
+## Project Layout
 
-**Contact / License**
+```
+PublicTransportationPlanner/
+├── src/main/kotlin/
+│   ├── Main.kt           # HTTP server, endpoints, haversine helper
+│   ├── MetroBuilder.kt   # Network generation algorithm
+│   └── PtalLookup.kt     # TfL PTAL 2015 nearest-neighbour lookup
+├── src/main/resources/
+│   ├── map.html          # Leaflet-based interactive map
+│   ├── ptal_spatial.csv  # PTAL data (Greater London LSOAs)
+│   └── *.csv             # Population grid datasets
+├── scripts/
+│   └── sample.csv        # Example input CSV
+├── build.gradle.kts
+├── settings.gradle.kts
+├── DEBUG_GUIDE.md        # Tuning guide for the network algorithm
+└── README.md
+```
 
-- No license specified — add a `LICENSE` file if you intend to open-source this project.
+## Configuration & Data
+
+- Population data CSVs should be placed in `src/main/resources/` (example: `gbr_pd_2020_1km_ASCII_XYZ.csv`).
+- PTAL enrichment is automatically enabled when `ptal_spatial.csv` is present on the classpath; otherwise it degrades gracefully.
+- A `GITHUB_TOKEN` environment variable can be set to authenticate proxied requests to the GitHub API.
+
+## Development
+
+```bash
+# Build and test
+./gradlew build
+
+# Run tests only
+./gradlew test
+
+# Run with debug output (MetroBuilder logs are on by default)
+./gradlew run
+```
+
+See [DEBUG_GUIDE.md](DEBUG_GUIDE.md) for a detailed walkthrough of the network algorithm's diagnostic output and how to tune its parameters.
+
+## License
+
+This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
