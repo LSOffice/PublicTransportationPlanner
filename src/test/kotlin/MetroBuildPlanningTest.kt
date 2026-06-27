@@ -89,6 +89,40 @@ class MetroBuildPlanningTest {
     }
 
     @Test
+    fun rejectsNearbyClusterThatWouldDragAStationTooFar() {
+        val stationsA =
+            listOf(
+                Station("a1", -0.1500, 51.5000, 100.0),
+                Station("a2", -0.1000, 51.5000, 50.0),
+                Station("a3", -0.0500, 51.5000, 100.0),
+            )
+        val stationsB =
+            listOf(
+                Station("b1", -0.1000, 51.4600, 100.0),
+                Station("b2", -0.1000, 51.5072, 900.0),
+                Station("b3", -0.1000, 51.5500, 100.0),
+            )
+        val lineA =
+            Line(
+                "RT1",
+                stationsA,
+                routeLength(stationsA),
+                0.0,
+            )
+        val lineB =
+            Line(
+                "RT2",
+                stationsB,
+                routeLength(stationsB),
+                0.0,
+            )
+
+        val result = builder.consolidateStationClusters(listOf(lineA, lineB), minStationsPerLine = 3)
+
+        assertNotEquals(result[0].stations[1].id, result[1].stations[1].id)
+    }
+
+    @Test
     fun classifiesCentralRingAndOuterSegmentsByMostEconomicalTechnology() {
         val centerLon = -0.1278
         val centerLat = 51.5074

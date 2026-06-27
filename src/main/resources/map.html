@@ -434,6 +434,28 @@
       background: #0f172a;
       box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86);
     }
+
+    .data-coverage-legend {
+      padding: 7px 9px;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      box-shadow: 0 1px 6px rgba(15, 23, 42, 0.18);
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .data-coverage-legend span {
+      display: inline-block;
+      width: 18px;
+      height: 10px;
+      margin-right: 6px;
+      border: 1px solid rgba(185, 28, 28, 0.72);
+      background: rgba(220, 38, 38, 0.22);
+      vertical-align: -1px;
+    }
   </style>
 </head>
 
@@ -538,6 +560,64 @@
         attribution: "© OpenStreetMap",
       },
     ).addTo(map);
+
+    map.createPane("dataCoveragePane");
+    map.getPane("dataCoveragePane").style.zIndex = 330;
+    map.getPane("dataCoveragePane").style.pointerEvents = "none";
+
+    const TRANSPORT_OD_DATA_BOUNDS = L.latLngBounds(
+      [50.830000, -0.972329],
+      [52.224000, 0.835000],
+    );
+
+    const transportDataCoverageLayer = L.layerGroup().addTo(map);
+    const restrictedDataStyle = {
+      pane: "dataCoveragePane",
+      interactive: false,
+      stroke: false,
+      fillColor: "#dc2626",
+      fillOpacity: 0.20,
+    };
+
+    function addRestrictedDataRect(south, west, north, east) {
+      if (north <= south || east <= west) return;
+      L.rectangle([[south, west], [north, east]], restrictedDataStyle).addTo(transportDataCoverageLayer);
+    }
+
+    function drawTransportDataCoverageOverlay() {
+      transportDataCoverageLayer.clearLayers();
+      const view = map.getBounds().pad(0.08);
+      const south = view.getSouth();
+      const north = view.getNorth();
+      const west = view.getWest();
+      const east = view.getEast();
+
+      if (!view.intersects(TRANSPORT_OD_DATA_BOUNDS)) {
+        addRestrictedDataRect(south, west, north, east);
+        return;
+      }
+
+      const dataSouth = Math.max(south, TRANSPORT_OD_DATA_BOUNDS.getSouth());
+      const dataNorth = Math.min(north, TRANSPORT_OD_DATA_BOUNDS.getNorth());
+      const dataWest = Math.max(west, TRANSPORT_OD_DATA_BOUNDS.getWest());
+      const dataEast = Math.min(east, TRANSPORT_OD_DATA_BOUNDS.getEast());
+
+      addRestrictedDataRect(dataNorth, west, north, east);
+      addRestrictedDataRect(south, west, dataSouth, east);
+      addRestrictedDataRect(dataSouth, west, dataNorth, dataWest);
+      addRestrictedDataRect(dataSouth, dataEast, dataNorth, east);
+    }
+
+    map.on("moveend zoomend resize", drawTransportDataCoverageOverlay);
+    drawTransportDataCoverageOverlay();
+
+    const dataCoverageLegend = L.control({ position: "bottomright" });
+    dataCoverageLegend.onAdd = function () {
+      const div = L.DomUtil.create("div", "data-coverage-legend");
+      div.innerHTML = "<span></span>No from-to journey data";
+      return div;
+    };
+    dataCoverageLegend.addTo(map);
 
     // Controls
     const zoomRange = document.getElementById("zoomRange");
@@ -1732,6 +1812,67 @@
       return `${line?.id || `Route ${index + 1}`} Line`;
     }
 
+    function routeNameKey(name) {
+      return String(name || "")
+        .toLocaleLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+    }
+
+    function duplicateRouteNameAlternatives(line, index, stationNames, primaryName) {
+      const cleanedNames = (stationNames || []).map(routeNamePart).filter(Boolean);
+      const first = routeNamePart(cleanedNames[0]);
+      const last = routeNamePart(cleanedNames[cleanedNames.length - 1]);
+      const landmark = routeNamePart(distinctiveLineLandmark(cleanedNames));
+      const middle = routeNamePart(cleanedNames[Math.floor(cleanedNames.length / 2)]);
+      const alternatives = [];
+
+      function addName(parts) {
+        const joined = parts.filter(Boolean).join("-");
+        if (!joined) return;
+        alternatives.push(`${joined} Line`);
+      }
+
+      if (first && last && routeNameKey(first) !== routeNameKey(last)) addName([first, last]);
+      if (first && landmark && routeNameKey(first) !== routeNameKey(landmark)) addName([first, landmark]);
+      if (landmark && last && routeNameKey(landmark) !== routeNameKey(last)) addName([landmark, last]);
+      if (first && middle && routeNameKey(first) !== routeNameKey(middle)) addName([first, middle]);
+      if (middle && last && routeNameKey(middle) !== routeNameKey(last)) addName([middle, last]);
+
+      const base = String(primaryName || line?.id || `Route ${index + 1}`).replace(/\s+Line$/i, "");
+      alternatives.push(`${base} ${line?.id || index + 1} Line`);
+
+      return alternatives.filter((name, idx, arr) => routeNameKey(name) && arr.findIndex((other) => routeNameKey(other) === routeNameKey(name)) === idx);
+    }
+
+    function uniqueRouteNames(lines, stationNamesForLine) {
+      const entries = (lines || []).map((line, index) => {
+        const stationNames = stationNamesForLine(line, index);
+        const primary = lineBoardRouteName(line, index, stationNames);
+        return { line, index, stationNames, primary };
+      });
+      const primaryCounts = new Map();
+      entries.forEach((entry) => {
+        const key = routeNameKey(entry.primary);
+        primaryCounts.set(key, (primaryCounts.get(key) || 0) + 1);
+      });
+
+      const namesById = new Map();
+      const used = new Set();
+      entries.forEach((entry) => {
+        let name = entry.primary;
+        const isDuplicate = (primaryCounts.get(routeNameKey(name)) || 0) > 1;
+        if (isDuplicate || used.has(routeNameKey(name))) {
+          name = duplicateRouteNameAlternatives(entry.line, entry.index, entry.stationNames, entry.primary)
+            .find((candidate) => !used.has(routeNameKey(candidate))) ||
+            `${String(entry.primary).replace(/\s+Line$/i, "")} ${entry.index + 1} Line`;
+        }
+        used.add(routeNameKey(name));
+        namesById.set(entry.line.id, name);
+      });
+      return namesById;
+    }
+
     function lineBoardShortName(routeName) {
       return String(routeName || "")
         .replace(/\s+Line$/i, "")
@@ -1778,14 +1919,14 @@
     .stop { position:relative; display:grid; grid-template-columns:32px minmax(0,1fr); gap:10px; min-height:43px; }
     .connector { position:absolute; left:13.5px; top:16px; bottom:-16px; width:5px; border-radius:3px; background:currentColor; z-index:0; }
     .dot { width:15px; height:15px; border:3px solid currentColor; background:#fff; border-radius:50%; margin:2px auto 0; z-index:1; }
-    .dot.transfer { width:19px; height:19px; border-width:4px; margin-top:0; }
-    .stop-lines { margin:0 0 4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
-    .line-chip { border-radius:4px; padding:1px 5px; background:currentColor; color:#fff; font-size:9px; font-weight:800; line-height:1.35; }
-    .line-chip.transfer-line { background:#f8fafc; color:#334155; border:1px solid var(--border); }
+    .dot.transfer { width:20px; height:20px; border-width:4px; margin-top:0; box-shadow:0 0 0 3px rgba(15,23,42,.07); }
+    .station-main { min-width:0; padding-top:1px; text-align:left; }
     .name { font-size:13px; font-weight:700; line-height:1.25; overflow-wrap:anywhere; }
-    .details { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; color:var(--muted); font-size:10.5px; line-height:1.35; }
-    .pill { border:1px solid var(--border); border-radius:999px; padding:1px 6px; background:#f8fafc; color:#334155; font-weight:700; }
-    .walk { color:#475569; }
+    .transfer-list { margin-top:6px; display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+    .transfer-pill { display:inline-flex; align-items:center; gap:6px; max-width:100%; border:1px solid var(--border); border-left-width:4px; border-radius:6px; padding:3px 7px 3px 5px; background:#fff; color:#1e293b; font-size:10.5px; font-weight:750; line-height:1.25; box-shadow:0 1px 2px rgba(15,23,42,.06); }
+    .transfer-pill .swatch { width:8px; height:8px; border-radius:50%; flex:0 0 auto; background:currentColor; }
+    .transfer-pill .text { min-width:0; overflow-wrap:anywhere; }
+    .walk-list { margin-top:5px; display:flex; flex-direction:column; align-items:flex-start; gap:3px; color:#475569; font-size:10.5px; line-height:1.35; }
     @media (max-width: 640px) { body { padding:14px; } header { display:block; } header p { margin-top:5px; } .boards { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -1796,14 +1937,12 @@
   </header>
   <main class="boards">`;
 
-      const routeNamesById = new Map();
-      lineData.lines.forEach((line, li) => {
-        const names = line.stations.map((st) => {
+      const routeNamesById = uniqueRouteNames(lineData.lines, (line) =>
+        line.stations.map((st) => {
           const key = stationKey(st);
           return ctx.stationNames.get(key) || window._stationNameByKey?.[key] || window._stationNames?.[st.id] || st.id;
-        });
-        routeNamesById.set(line.id, lineBoardRouteName(line, li, names));
-      });
+        })
+      );
 
       lineData.lines.forEach((line, li) => {
         const color = lineColors[line.id] || "#334155";
@@ -1828,25 +1967,31 @@
             .filter((item) => item.line && item.line.id !== line.id);
           const walks = walkingNotesForKey(key, ctx.walkingLinks);
           const isTransfer = transferLines.length > 0;
-          html += `<div class="stop" style="color:${color};">`;
+          const firstTransferColor = transferLines.length
+            ? (lineColors[transferLines[0].line.id] || "#334155")
+            : color;
+          const dotStyle = isTransfer
+            ? ` style="background:linear-gradient(135deg,#fff 0 42%,${firstTransferColor} 42% 58%,#fff 58% 100%);"`
+            : "";
+          html += `<div class="stop${isTransfer ? " transfer-stop" : ""}" style="color:${color};">`;
           if (stationIndex < line.stations.length - 1) {
             html += `<span class="connector" aria-hidden="true"></span>`;
           }
-          html += `<span class="dot${isTransfer ? " transfer" : ""}"></span>`;
-          html += `<div><div class="stop-lines"><span class="line-chip">${escapeHtml(lineBoardShortName(routeName))}</span>`;
-          transferLines.forEach((item) => {
-            const transferName = routeNamesById.get(item.line.id) || lineBoardRouteName(item.line, item.index, []);
-            html += `<span class="line-chip transfer-line">${escapeHtml(lineBoardShortName(transferName))}</span>`;
-          });
-          html += `</div><div class="name">${escapeHtml(name)}</div>`;
-          if (isTransfer || walks.length) {
-            html += `<div class="details">`;
+          html += `<span class="dot${isTransfer ? " transfer" : ""}"${dotStyle}></span>`;
+          html += `<div class="station-main"><div class="name">${escapeHtml(name)}</div>`;
+          if (isTransfer) {
+            html += `<div class="transfer-list" aria-label="Transfers">`;
             transferLines.forEach((item) => {
               const transferName = routeNamesById.get(item.line.id) || lineBoardRouteName(item.line, item.index, []);
-              html += `<span class="pill">Transfer ${escapeHtml(transferName)}</span>`;
+              const transferColor = lineColors[item.line.id] || "#334155";
+              html += `<span class="transfer-pill" style="border-color:${transferColor}; color:${transferColor};"><span class="swatch" aria-hidden="true"></span><span class="text">Change to ${escapeHtml(transferName)}</span></span>`;
             });
+            html += `</div>`;
+          }
+          if (walks.length) {
+            html += `<div class="walk-list">`;
             walks.forEach((note) => {
-              html += `<span class="walk">${escapeHtml(note)}</span>`;
+              html += `<span>${escapeHtml(note)}</span>`;
             });
             html += `</div>`;
           }
@@ -1934,6 +2079,13 @@
         schematicStationNames.set(key, resolvedName);
       });
 
+      const schematicRouteNamesById = uniqueRouteNames(lines, (line) =>
+        line.stations.map((st) => {
+          const key = stationKey(st);
+          return schematicStationNames.get(key) || window._stationNames?.[st.id] || st.id;
+        })
+      );
+
       // Generate SVG
       let svg = `<!DOCTYPE html>
 <html lang="en">
@@ -1999,6 +2151,15 @@
       fill: white;
       stroke-width: 2.5;
     }
+    .transfer-ring {
+      fill: white;
+      stroke-width: 3.5;
+      filter: drop-shadow(0 1px 2px rgba(15,23,42,.20));
+    }
+    .transfer-spoke {
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
     .station-label {
       font-family: var(--font);
       font-size: 10px;
@@ -2006,6 +2167,30 @@
       text-anchor: middle;
       pointer-events: none;
       fill: var(--text);
+    }
+    .transfer-card-bg {
+      fill: rgba(255,255,255,.96);
+      stroke: #dbe3ee;
+      stroke-width: 1;
+      filter: drop-shadow(0 2px 4px rgba(15,23,42,.14));
+    }
+    .transfer-title {
+      font-family: var(--font);
+      font-size: 10px;
+      font-weight: 800;
+      fill: #0f172a;
+      pointer-events: none;
+    }
+    .transfer-chip-bg {
+      fill: #fff;
+      stroke-width: 1.5;
+    }
+    .transfer-chip-text {
+      font-family: var(--font);
+      font-size: 7.5px;
+      font-weight: 800;
+      dominant-baseline: middle;
+      pointer-events: none;
     }
     .legend-section {
       margin-top: 20px;
@@ -2107,8 +2292,21 @@
       stationList.forEach(([key, pos]) => {
         const isTransfer = pos.station.lines.length > 1;
         const radius = isTransfer ? 6 : 4;
-        const strokeColor = isTransfer ? "#c62828" : "#333";
-        svg += `<circle class="station" cx="${pos.x}" cy="${pos.y}" r="${radius}" stroke="${strokeColor}" />`;
+        if (isTransfer) {
+          const transferColors = pos.station.lines.map((id) => lineColors[id] || "#334155");
+          svg += `<circle class="transfer-ring" cx="${pos.x}" cy="${pos.y}" r="${radius + 1.5}" stroke="${transferColors[0] || "#334155"}" />`;
+          transferColors.forEach((transferColor, colorIndex) => {
+            const angle = (-Math.PI / 2) + (colorIndex * 2 * Math.PI / transferColors.length);
+            const x1 = pos.x + Math.cos(angle) * (radius + 3.5);
+            const y1 = pos.y + Math.sin(angle) * (radius + 3.5);
+            const x2 = pos.x + Math.cos(angle) * (radius + 8.5);
+            const y2 = pos.y + Math.sin(angle) * (radius + 8.5);
+            svg += `<line class="transfer-spoke" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${transferColor}" />`;
+          });
+          svg += `<circle class="station" cx="${pos.x}" cy="${pos.y}" r="${radius - 1}" stroke="#0f172a" />`;
+        } else {
+          svg += `<circle class="station" cx="${pos.x}" cy="${pos.y}" r="${radius}" stroke="#333" />`;
+        }
       });
 
       // Draw station labels — collision-aware placement
@@ -2173,6 +2371,51 @@
         };
       }
 
+      function svgTextWidth(text, fontSize, minWidth = 0) {
+        return Math.max(minWidth, String(text || "").length * fontSize * 0.56 + 8);
+      }
+
+      function transferCardBox(pos, label) {
+        const lineNames = (pos.station.lines || [])
+          .map((id) => schematicRouteNamesById.get(id) || id)
+          .map(lineBoardShortName);
+        const chipWidths = lineNames.map((name) => svgTextWidth(name, 7.5, 34));
+        const maxChipWidth = chipWidths.length ? Math.max(...chipWidths) : 0;
+        const titleWidth = svgTextWidth(label, 10, 72);
+        const width = Math.min(170, Math.max(98, titleWidth, maxChipWidth + 16));
+        const height = 22 + Math.max(0, lineNames.length) * 15;
+        return { width, height, lineNames, chipWidths };
+      }
+
+      function estimateTransferCardBox(cx, cy, label, anchor, dotR, pos) {
+        const card = transferCardBox(pos, label);
+        const x = cx + anchor[0];
+        const y = cy + anchor[1] - 14;
+        return {
+          x1: x - 6,
+          y1: y - 6,
+          x2: x + card.width + 6,
+          y2: y + card.height + 6,
+          x,
+          y,
+          card,
+        };
+      }
+
+      function transferAnchors(dotR) {
+        const g = dotR + 8;
+        return [
+          [g, -10],
+          [g, 12],
+          [g, -34],
+          [-(g + 128), -10],
+          [-(g + 128), 12],
+          [-(g + 128), -34],
+          [g, 34],
+          [-(g + 128), 34],
+        ];
+      }
+
       stationList.forEach(([key, pos]) => {
         const label = schematicStationNames.get(key) || pos.station.id.replace("st_", "");
         const isTransfer = pos.station.lines.length > 1;
@@ -2181,27 +2424,54 @@
         const fill = isTransfer ? "#c62828" : "#222";
         const dotR = isTransfer ? 6 : 4;
 
-        const candidates = candidateAnchors(dotR);
+        const candidates = isTransfer ? transferAnchors(dotR) : candidateAnchors(dotR);
         let bestAnchor = candidates[0];
         let bestScore = Infinity; // total overlap area (lower is better)
+        let bestBox = null;
 
         for (const anchor of candidates) {
-          const box = estimateLabelBox(pos.x, pos.y, label, fontSize, anchor, dotR);
+          const box = isTransfer
+            ? estimateTransferCardBox(pos.x, pos.y, label, anchor, dotR, pos)
+            : estimateLabelBox(pos.x, pos.y, label, fontSize, anchor, dotR);
           let score = 0;
           for (const placed of placedBoxes) score += overlapArea(box, placed);
           if (score < bestScore) {
             bestScore = score;
             bestAnchor = anchor;
+            bestBox = box;
             if (score === 0) break; // perfect — no need to check further
           }
         }
 
-        const finalBox = estimateLabelBox(pos.x, pos.y, label, fontSize, bestAnchor, dotR);
+        const finalBox = bestBox || (isTransfer
+          ? estimateTransferCardBox(pos.x, pos.y, label, bestAnchor, dotR, pos)
+          : estimateLabelBox(pos.x, pos.y, label, fontSize, bestAnchor, dotR));
         placedBoxes.push(finalBox);
 
-        const lx = pos.x + bestAnchor[0];
-        const ly = pos.y + bestAnchor[1];
-        svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="middle">${escapeHtml(label)}</text>`;
+        if (isTransfer) {
+          const x = finalBox.x;
+          const y = finalBox.y;
+          const card = finalBox.card;
+          const lineIds = pos.station.lines || [];
+          svg += `<line x1="${pos.x.toFixed(1)}" y1="${pos.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${(y + 11).toFixed(1)}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,3" opacity=".75" />`;
+          svg += `<rect class="transfer-card-bg" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${card.width.toFixed(1)}" height="${card.height.toFixed(1)}" rx="6" />`;
+          svg += `<text class="transfer-title" x="${(x + 8).toFixed(1)}" y="${(y + 14).toFixed(1)}" text-anchor="start">${escapeHtml(label)}</text>`;
+          card.lineNames.forEach((name, chipIndex) => {
+            const lineId = lineIds[chipIndex];
+            const chipColor = lineColors[lineId] || "#334155";
+            const chipX = x + 8;
+            const chipY = y + 22 + chipIndex * 15;
+            const chipWidth = Math.min(card.width - 16, card.chipWidths[chipIndex]);
+            svg += `<rect class="transfer-chip-bg" x="${chipX.toFixed(1)}" y="${chipY.toFixed(1)}" width="${chipWidth.toFixed(1)}" height="11" rx="4" stroke="${chipColor}" />`;
+            svg += `<circle cx="${(chipX + 6).toFixed(1)}" cy="${(chipY + 5.5).toFixed(1)}" r="2.3" fill="${chipColor}" />`;
+            svg += `<text class="transfer-chip-text" x="${(chipX + 12).toFixed(1)}" y="${(chipY + 5.8).toFixed(1)}" fill="${chipColor}" text-anchor="start">${escapeHtml(name)}</text>`;
+          });
+        } else {
+          const lx = pos.x + bestAnchor[0];
+          const ly = pos.y + bestAnchor[1];
+          const anchor = bestAnchor[0] < -1 ? "end" : bestAnchor[0] > 1 ? "start" : "middle";
+          svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="${anchor}">${escapeHtml(label)}</text>`;
+        }
       });
 
       // Add SVG in-map legend (per-line, top-left)

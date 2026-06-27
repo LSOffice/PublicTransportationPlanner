@@ -1615,6 +1615,98 @@ class MetroBuilder(
             }
         }
 
+        fun serviceRadiusForPlaceMeters(placeIndex: Int): Double {
+            val place = places[placeIndex]
+            val distToCenter = haversineMeters(place.lon, place.lat, centerLon, centerLat)
+            return when {
+                distToCenter <= coreRadius -> 850.0
+                distToCenter <= ringRadius -> 1_200.0
+                else -> 1_700.0
+            }
+        }
+
+        fun isPlaceCoveredByCorridors(
+            placeIndex: Int,
+            corridors: List<Pair<List<Int>, LineType>>,
+        ): Boolean {
+            val place = places[placeIndex]
+            val radius = serviceRadiusForPlaceMeters(placeIndex)
+            return corridors.any { (chain, _) ->
+                chain.any { nodeIndex ->
+                    val node = places[nodeIndex]
+                    haversineMeters(place.lon, place.lat, node.lon, node.lat) <= radius
+                }
+            }
+        }
+
+        fun coverageFraction(corridors: List<Pair<List<Int>, LineType>>): Double {
+            val total = places.sumOf { it.value }.coerceAtLeast(1.0)
+            val covered =
+                places.indices.sumOf { idx ->
+                    if (isPlaceCoveredByCorridors(idx, corridors)) places[idx].value else 0.0
+                }
+            return covered / total
+        }
+
+        fun coverageGain(chain: List<Int>): Double =
+            places.indices.sumOf { idx ->
+                if (isPlaceCoveredByCorridors(idx, finalCorridors)) {
+                    0.0
+                } else {
+                    val place = places[idx]
+                    val radius = serviceRadiusForPlaceMeters(idx)
+                    val coveredByCandidate =
+                        chain.any { nodeIndex ->
+                            val node = places[nodeIndex]
+                            haversineMeters(place.lon, place.lat, node.lon, node.lat) <= radius
+                        }
+                    if (coveredByCandidate) place.value else 0.0
+                }
+            }
+
+        val targetCoverage = max(params.targetCoverageFraction, 0.78)
+        val maxCoverageBackfillLines = 2
+        var currentCoverage = coverageFraction(finalCorridors)
+        var backfillLinesAdded = 0
+        if (currentCoverage < targetCoverage) {
+            dbg(
+                "  Phase 4: Coverage backfill needed " +
+                    "(${"%.0f".format(currentCoverage * 100)}% < ${"%.0f".format(targetCoverage * 100)}%)",
+            )
+        }
+        while (currentCoverage < targetCoverage && backfillLinesAdded < maxCoverageBackfillLines) {
+            val selectedSets = finalCorridors.map { it.first.toSet() }
+            val best =
+                classifiedChains
+                    .asSequence()
+                    .filter { (chain, _) -> selectedSets.none { it == chain.toSet() } }
+                    .filter { (chain, _) -> !isParallelToSelected(chain) }
+                    .mapNotNull { (chain, lineType) ->
+                        val gain = coverageGain(chain)
+                        if (gain <= 0.0) return@mapNotNull null
+                        val length =
+                            chain.zipWithNext().sumOf { (a, b) ->
+                                haversineMeters(places[a].lon, places[a].lat, places[b].lon, places[b].lat)
+                            }
+                        val efficientGain = gain / (1.0 + length / 1000.0)
+                        Triple(chain, if (lineType == LineType.NOT_METRO) LineType.RADIAL_TRUNK else lineType, efficientGain)
+                    }.maxByOrNull { it.third }
+
+            if (best == null) break
+            val before = currentCoverage
+            finalCorridors.add(best.first to best.second)
+            currentCoverage = coverageFraction(finalCorridors)
+            if (currentCoverage <= before + 0.01) {
+                finalCorridors.removeAt(finalCorridors.lastIndex)
+                break
+            }
+            backfillLinesAdded += 1
+            dbg(
+                "    ✓ Coverage line added: ${best.first.size} nodes, type=${best.second}, " +
+                    "coverage ${"%.0f".format(before * 100)}% → ${"%.0f".format(currentCoverage * 100)}%",
+            )
+        }
+
         // STEP 8 — Instrumentation
         dbg("STEP 8 — Final corridors selected: ${finalCorridors.size}")
         dbg("  Breakdown:")
@@ -2024,14 +2116,15 @@ class MetroBuilder(
         dbg("  Metrics OK: ${fitnessReport.overallMetricsOK}")
 
         // POST-BUILD: Snap interchange stations.
-        // When two lines have stations within 500 m of each other, replace both with a
+        // When two lines have stations at the same site, replace both with a
         // single shared station at the population-weighted midpoint. This produces a genuine
         // shared node (one map dot carrying both line colours) not two nearly-coincident dots.
-        val snappedLines = snapInterchangeStations(builtLines, snapRadiusMeters = 500.0)
+        val snappedLines = snapInterchangeStations(builtLines, snapRadiusMeters = 180.0)
         val consolidatedLines =
             consolidateStationClusters(
                 snappedLines,
                 mergeRadiusMeters = 900.0,
+                maxStationMoveMeters = 450.0,
                 maxRouteLengthChangeRatio = 0.12,
                 minStationsPerLine = minStationsPerLine,
             )
@@ -2141,6 +2234,7 @@ class MetroBuilder(
     internal fun consolidateStationClusters(
         lines: List<Line>,
         mergeRadiusMeters: Double = 900.0,
+        maxStationMoveMeters: Double = 450.0,
         maxRouteLengthChangeRatio: Double = 0.12,
         minStationsPerLine: Int = 3,
     ): List<Line> {
@@ -2217,6 +2311,11 @@ class MetroBuilder(
                         ?: "INT_CLUSTER_${clusterCounter++}"
                 val shared = Station(sharedId, sharedLon, sharedLat, wSum)
                 val idsToReplace = clusterRefs.map { it.station.id }.toSet()
+                val maxMove =
+                    clusterRefs.maxOf {
+                        haversineMeters(it.station.lon, it.station.lat, sharedLon, sharedLat)
+                    }
+                if (maxMove > maxStationMoveMeters) continue
 
                 val candidate =
                     next.map { line ->
