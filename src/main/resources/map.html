@@ -341,6 +341,45 @@
       display: block;
     }
 
+    .access-targets {
+      display: grid;
+      gap: 6px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--text);
+    }
+
+    .access-target-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .access-target-row:last-child {
+      border-bottom: 0;
+    }
+
+    .access-target-area {
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .access-target-time {
+      color: var(--text);
+      font-weight: 800;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .access-target-note {
+      margin-top: 2px;
+      color: var(--text-muted);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
     /* ── Neighbourhood info ──────────────────────────────────── */
     #neighProps {
       margin: 4px 0 0;
@@ -529,6 +568,27 @@
 
     <!-- Status message -->
     <div id="message"></div>
+
+    <div class="panel-section" id="accessGuarantee">
+      <span class="section-label">Access Guarantee</span>
+      <div class="access-targets">
+        <div class="access-target-row">
+          <span class="access-target-area">Central / high density</span>
+          <span class="access-target-time">10 min</span>
+        </div>
+        <div class="access-target-row">
+          <span class="access-target-area">Inner urban</span>
+          <span class="access-target-time">12-15 min</span>
+        </div>
+        <div class="access-target-row">
+          <span class="access-target-area">Outer / lower density</span>
+          <span class="access-target-time">15-20 min</span>
+        </div>
+      </div>
+      <div class="access-target-note">Station spacing widens away from the centre to balance coverage with build cost.</div>
+    </div>
+
+    <div class="panel-divider"></div>
 
     <!-- Neighbourhood -->
     <div class="panel-section" id="neighbourhoodInfo">
@@ -2127,20 +2187,54 @@
       letter-spacing: -0.02em;
       color: var(--text);
     }
-    header p {
-      margin: 0;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-    .map-wrap {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      box-shadow: 0 4px 20px rgba(0,0,0,0.09);
-      overflow: hidden;
-      display: inline-block;
-    }
-    svg { display: block; font-family: var(--font); }
+	    header p {
+	      margin: 0;
+	      font-size: 12px;
+	      color: var(--text-muted);
+	    }
+	    .toolbar {
+	      position: sticky;
+	      top: 0;
+	      z-index: 5;
+	      display: flex;
+	      align-items: center;
+	      gap: 10px;
+	      margin: -6px 0 14px;
+	      padding: 8px 10px;
+	      width: max-content;
+	      max-width: 100%;
+	      background: rgba(255,255,255,.94);
+	      border: 1px solid var(--border);
+	      border-radius: var(--r);
+	      box-shadow: 0 2px 10px rgba(15,23,42,.10);
+	      font-size: 12px;
+	      font-weight: 700;
+	    }
+	    .toolbar button {
+	      width: 28px;
+	      height: 28px;
+	      border: 1px solid var(--border);
+	      border-radius: 5px;
+	      background: #fff;
+	      color: var(--text);
+	      font: inherit;
+	      cursor: pointer;
+	    }
+	    .toolbar button:hover { background: #f8fafc; }
+	    .toolbar input { width: 180px; accent-color: var(--accent); }
+	    .toolbar output { min-width: 46px; color: var(--text-muted); text-align: right; }
+	    .map-wrap {
+	      background: var(--bg);
+	      border: 1px solid var(--border);
+	      border-radius: var(--r);
+	      box-shadow: 0 4px 20px rgba(0,0,0,0.09);
+	      overflow: auto;
+	      display: block;
+	      width: min(100%, calc(100vw - 48px));
+	      height: min(78vh, 900px);
+	      resize: both;
+	    }
+	    svg { display: block; font-family: var(--font); background:#fff; transition: width 120ms ease, height 120ms ease; }
     .line {
       stroke-width: 4;
       fill: none;
@@ -2185,13 +2279,24 @@
       fill: #fff;
       stroke-width: 1.5;
     }
-    .transfer-chip-text {
-      font-family: var(--font);
-      font-size: 7.5px;
-      font-weight: 800;
-      dominant-baseline: middle;
-      pointer-events: none;
-    }
+	    .transfer-chip-text {
+	      font-family: var(--font);
+	      font-size: 7.5px;
+	      font-weight: 800;
+	      dominant-baseline: middle;
+	      pointer-events: none;
+	    }
+	    .detail-label {
+	      opacity: 0;
+	      pointer-events: none;
+	      transition: opacity 120ms ease;
+	    }
+	    body.detail-labels .detail-label,
+	    .transfer-detail:hover {
+	      opacity: 1;
+	      pointer-events: auto;
+	    }
+	    body.detail-labels .compact-transfer-label { opacity: 0; }
     .legend-section {
       margin-top: 20px;
       display: flex;
@@ -2234,13 +2339,19 @@
     }
   </style>
 </head>
-<body>
-  <header>
-    <h1>Metro Network — Schematic Map</h1>
-    <p>Algorithmically generated from population density</p>
-  </header>
-  <div class="map-wrap">
-  <svg width="${svgWidth}" height="${svgHeight}">`;
+	<body>
+	  <header>
+	    <h1>Metro Network — Schematic Map</h1>
+	    <p>Algorithmically generated from population density</p>
+	  </header>
+	  <div class="toolbar" aria-label="Map zoom controls">
+	    <button id="zoomOut" type="button" title="Zoom out">-</button>
+	    <input id="schematicZoom" type="range" min="0.85" max="2.6" step="0.05" value="1">
+	    <button id="zoomIn" type="button" title="Zoom in">+</button>
+	    <output id="zoomReadout">100%</output>
+	  </div>
+	  <div class="map-wrap">
+	  <svg id="schematicSvg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">`;
 
       // Draw lines (each line gets a distinct color)
       lineStationMaps.forEach((lineMap, idx) => {
@@ -2416,12 +2527,19 @@
         ];
       }
 
-      stationList.forEach(([key, pos]) => {
-        const label = schematicStationNames.get(key) || pos.station.id.replace("st_", "");
-        const isTransfer = pos.station.lines.length > 1;
-        const fontSize = isTransfer ? 10 : 9;
-        const fontWeight = isTransfer ? 700 : 600;
-        const fill = isTransfer ? "#c62828" : "#222";
+	      stationList
+	        .slice()
+	        .sort((a, b) => {
+	          const at = a[1].station.lines.length > 1 ? 1 : 0;
+	          const bt = b[1].station.lines.length > 1 ? 1 : 0;
+	          return bt - at;
+	        })
+	        .forEach(([key, pos]) => {
+	        const label = schematicStationNames.get(key) || pos.station.id.replace("st_", "");
+	        const isTransfer = pos.station.lines.length > 1;
+	        const fontSize = isTransfer ? 10 : 9;
+	        const fontWeight = isTransfer ? 700 : 600;
+	        const fill = isTransfer ? "#c62828" : "#222";
         const dotR = isTransfer ? 6 : 4;
 
         const candidates = isTransfer ? transferAnchors(dotR) : candidateAnchors(dotR);
@@ -2446,32 +2564,40 @@
         const finalBox = bestBox || (isTransfer
           ? estimateTransferCardBox(pos.x, pos.y, label, bestAnchor, dotR, pos)
           : estimateLabelBox(pos.x, pos.y, label, fontSize, bestAnchor, dotR));
-        placedBoxes.push(finalBox);
+	        const canShowAtDefault = bestScore === 0 || isTransfer;
+	        if (canShowAtDefault) placedBoxes.push(finalBox);
 
-        if (isTransfer) {
-          const x = finalBox.x;
-          const y = finalBox.y;
-          const card = finalBox.card;
-          const lineIds = pos.station.lines || [];
-          svg += `<line x1="${pos.x.toFixed(1)}" y1="${pos.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${(y + 11).toFixed(1)}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,3" opacity=".75" />`;
-          svg += `<rect class="transfer-card-bg" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${card.width.toFixed(1)}" height="${card.height.toFixed(1)}" rx="6" />`;
-          svg += `<text class="transfer-title" x="${(x + 8).toFixed(1)}" y="${(y + 14).toFixed(1)}" text-anchor="start">${escapeHtml(label)}</text>`;
-          card.lineNames.forEach((name, chipIndex) => {
-            const lineId = lineIds[chipIndex];
-            const chipColor = lineColors[lineId] || "#334155";
+	        if (isTransfer) {
+	          const x = finalBox.x;
+	          const y = finalBox.y;
+	          const card = finalBox.card;
+	          const lineIds = pos.station.lines || [];
+	          const compactAnchor = bestAnchor[0] < -1 ? "end" : "start";
+	          const compactX = pos.x + (bestAnchor[0] < -1 ? -14 : 14);
+	          const compactY = pos.y - 9;
+	          svg += `<text class="station-label compact-transfer-label" x="${compactX.toFixed(1)}" y="${compactY.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="${compactAnchor}">${escapeHtml(label)}</text>`;
+	          svg += `<g class="detail-label transfer-detail">`;
+	          svg += `<line x1="${pos.x.toFixed(1)}" y1="${pos.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${(y + 11).toFixed(1)}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2,3" opacity=".75" />`;
+	          svg += `<rect class="transfer-card-bg" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${card.width.toFixed(1)}" height="${card.height.toFixed(1)}" rx="6" />`;
+	          svg += `<text class="transfer-title" x="${(x + 8).toFixed(1)}" y="${(y + 14).toFixed(1)}" text-anchor="start">${escapeHtml(label)}</text>`;
+	          card.lineNames.forEach((name, chipIndex) => {
+	            const lineId = lineIds[chipIndex];
+	            const chipColor = lineColors[lineId] || "#334155";
             const chipX = x + 8;
             const chipY = y + 22 + chipIndex * 15;
             const chipWidth = Math.min(card.width - 16, card.chipWidths[chipIndex]);
-            svg += `<rect class="transfer-chip-bg" x="${chipX.toFixed(1)}" y="${chipY.toFixed(1)}" width="${chipWidth.toFixed(1)}" height="11" rx="4" stroke="${chipColor}" />`;
-            svg += `<circle cx="${(chipX + 6).toFixed(1)}" cy="${(chipY + 5.5).toFixed(1)}" r="2.3" fill="${chipColor}" />`;
-            svg += `<text class="transfer-chip-text" x="${(chipX + 12).toFixed(1)}" y="${(chipY + 5.8).toFixed(1)}" fill="${chipColor}" text-anchor="start">${escapeHtml(name)}</text>`;
-          });
-        } else {
-          const lx = pos.x + bestAnchor[0];
-          const ly = pos.y + bestAnchor[1];
-          const anchor = bestAnchor[0] < -1 ? "end" : bestAnchor[0] > 1 ? "start" : "middle";
-          svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="${anchor}">${escapeHtml(label)}</text>`;
-        }
+	            svg += `<rect class="transfer-chip-bg" x="${chipX.toFixed(1)}" y="${chipY.toFixed(1)}" width="${chipWidth.toFixed(1)}" height="11" rx="4" stroke="${chipColor}" />`;
+	            svg += `<circle cx="${(chipX + 6).toFixed(1)}" cy="${(chipY + 5.5).toFixed(1)}" r="2.3" fill="${chipColor}" />`;
+	            svg += `<text class="transfer-chip-text" x="${(chipX + 12).toFixed(1)}" y="${(chipY + 5.8).toFixed(1)}" fill="${chipColor}" text-anchor="start">${escapeHtml(name)}</text>`;
+	          });
+	          svg += `</g>`;
+	        } else {
+	          if (!canShowAtDefault) return;
+	          const lx = pos.x + bestAnchor[0];
+	          const ly = pos.y + bestAnchor[1];
+	          const anchor = bestAnchor[0] < -1 ? "end" : bestAnchor[0] > 1 ? "start" : "middle";
+	          svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="${anchor}">${escapeHtml(label)}</text>`;
+	        }
       });
 
       // Add SVG in-map legend (per-line, top-left)
@@ -2511,10 +2637,33 @@
       svg += `<span>● Transfer station &nbsp;○ End station</span>`;
       svg += `</div>`;
 
-      svg += `<p class="note"><strong>Note:</strong> Schematic diagram — geographic positions simplified for clarity.
-    Larger circles = transfer stations. <strong>tph</strong> values are demand-weighted suggestions (4–30 tph,
-    snapped to even headways).</p>`;
-      svg += `</body></html>`;
+	      svg += `<p class="note"><strong>Note:</strong> Schematic diagram — geographic positions simplified for clarity.
+	    Larger circles = transfer stations. <strong>tph</strong> values are demand-weighted suggestions (4–30 tph,
+	    snapped to even headways). Zoom in to show interchange details.</p>`;
+	      svg += `<script>
+	    (function () {
+	      const svg = document.getElementById("schematicSvg");
+	      const range = document.getElementById("schematicZoom");
+	      const readout = document.getElementById("zoomReadout");
+	      const zoomIn = document.getElementById("zoomIn");
+	      const zoomOut = document.getElementById("zoomOut");
+	      const baseWidth = ${svgWidth};
+	      const baseHeight = ${svgHeight};
+	      function setZoom(value) {
+	        const zoom = Math.max(0.85, Math.min(2.6, Number(value) || 1));
+	        range.value = zoom.toFixed(2);
+	        svg.style.width = Math.round(baseWidth * zoom) + "px";
+	        svg.style.height = Math.round(baseHeight * zoom) + "px";
+	        readout.textContent = Math.round(zoom * 100) + "%";
+	        document.body.classList.toggle("detail-labels", zoom >= 1.45);
+	      }
+	      range.addEventListener("input", () => setZoom(range.value));
+	      zoomIn.addEventListener("click", () => setZoom(Number(range.value) + 0.15));
+	      zoomOut.addEventListener("click", () => setZoom(Number(range.value) - 0.15));
+	      setZoom(1);
+	    })();
+	  </script>`;
+	      svg += `</body></html>`;
 
       // Open in new tab
       const blob = new Blob([svg], { type: "text/html" });
