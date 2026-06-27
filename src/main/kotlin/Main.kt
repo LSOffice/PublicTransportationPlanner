@@ -27,6 +27,10 @@ fun haversineMeters(
     return R * c
 }
 
+private val cachedNumbatDemandModel: RegionDemandModel? by lazy {
+    NumbatDemandLoader.loadFromResources()
+}
+
 fun main() {
     var port = 5000
     val maxPort = 5010
@@ -436,6 +440,7 @@ fun main() {
                     minStationValue = 0.0,
                     minCorridorLengthMeters = 2000.0,
                     minStationsPerLine = 3,
+                    observedRegionDemand = cachedNumbatDemandModel,
                 )
 
             // Calculate and display journey metrics
@@ -465,6 +470,30 @@ fun main() {
                 sb.append("\"length_m\":").append(l.lengthMeters).append(',')
                 sb.append("\"cost\":").append(l.cost).append(',')
                 sb.append("\"trains_per_hour\":").append(l.trainsPerHour).append(',')
+                l.buildEstimate?.let { estimate ->
+                    sb.append("\"build_estimate\":{")
+                    sb.append("\"station_cost\":").append(estimate.stationCost).append(',')
+                    sb.append("\"land_interface_allowance\":").append(estimate.landInterfaceAllowance).append(',')
+                    sb.append("\"contingency\":").append(estimate.contingency).append(',')
+                    sb.append("\"total_cost\":").append(estimate.totalCost).append(',')
+                    sb.append("\"deep_bore_m\":").append(estimate.deepBoreMeters).append(',')
+                    sb.append("\"subsurface_m\":").append(estimate.subsurfaceMeters).append(',')
+                    sb.append("\"surface_or_elevated_m\":").append(estimate.surfaceOrElevatedMeters).append(',')
+                    sb.append("\"recommendation\":\"").append(estimate.recommendation.replace("\"", "\\\"")).append("\",")
+                    sb.append("\"segments\":[")
+                    estimate.segments.forEachIndexed { si, segment ->
+                        if (si > 0) sb.append(',')
+                        sb.append('{')
+                        sb.append("\"from\":\"").append(segment.fromStationId).append("\",")
+                        sb.append("\"to\":\"").append(segment.toStationId).append("\",")
+                        sb.append("\"length_m\":").append(segment.lengthMeters).append(',')
+                        sb.append("\"technology\":\"").append(segment.technology.name).append("\",")
+                        sb.append("\"civil_cost\":").append(segment.civilCost).append(',')
+                        sb.append("\"rationale\":\"").append(segment.rationale.replace("\"", "\\\"")).append("\"")
+                        sb.append('}')
+                    }
+                    sb.append("]},")
+                }
                 sb.append("\"stations\":[")
                 l.stations.forEachIndexed { j: Int, st: org.lsoffice.Station ->
                     if (j > 0) sb.append(',')

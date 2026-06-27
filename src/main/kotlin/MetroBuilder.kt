@@ -64,6 +64,33 @@ enum class LineType {
     NOT_METRO, // doesn't meet criteria (filtered out)
 }
 
+enum class AlignmentTechnology {
+    DEEP_BORE_TUNNEL,
+    SUBSURFACE_TUNNEL,
+    SURFACE_OR_ELEVATED,
+}
+
+data class BuildSegmentEstimate(
+    val fromStationId: String,
+    val toStationId: String,
+    val lengthMeters: Double,
+    val technology: AlignmentTechnology,
+    val civilCost: Double,
+    val rationale: String,
+)
+
+data class LineBuildEstimate(
+    val segments: List<BuildSegmentEstimate>,
+    val stationCost: Double,
+    val landInterfaceAllowance: Double,
+    val contingency: Double,
+    val totalCost: Double,
+    val deepBoreMeters: Double,
+    val subsurfaceMeters: Double,
+    val surfaceOrElevatedMeters: Double,
+    val recommendation: String,
+)
+
 data class Line(
     val id: String,
     val stations: List<Station>,
@@ -72,7 +99,18 @@ data class Line(
     val type: LineType = LineType.RADIAL_TRUNK,
     val isLoop: Boolean = false,
     val trainsPerHour: Int = 0,
+    val buildEstimate: LineBuildEstimate? = null,
 )
+
+internal fun combineGravityAndObservedDemand(
+    gravityDemand: Double,
+    observedDemand: Double,
+    maxGravityDemand: Double,
+    maxObservedDemand: Double,
+): Double {
+    if (observedDemand <= 0.0 || maxGravityDemand <= 0.0 || maxObservedDemand <= 0.0) return gravityDemand
+    return gravityDemand + observedDemand * (maxGravityDemand / maxObservedDemand)
+}
 
 // Hub-to-hub path analysis
 data class HubPathAnalysis(
@@ -1102,12 +1140,14 @@ class MetroBuilder(
         maxTrunkLines: Int = 4,
         minCorridorLengthMeters: Double = 5_000.0,
         minStationsPerLine: Int = 5,
+        observedRegionDemand: RegionDemandModel? = null,
     ): List<Line> {
         if (gridPoints.isEmpty()) return emptyList()
 
         // STEP 1 — Identify places, not points (collapse grid artifacts)
         val sortedPoints = gridPoints.sortedByDescending { it.value }
         val places = mutableListOf<GridPoint>()
+        val placeRegionCells = mutableListOf<Set<RegionCell>>()
         val clusterRadius = 1000.0
         val used = BooleanArray(gridPoints.size) { false }
         val pointIndices = gridPoints.indices.sortedByDescending { gridPoints[it].value }
@@ -1119,13 +1159,16 @@ class MetroBuilder(
 
             // Sum up values in radius to create a "Place"
             var sumVal = 0.0
+            val regionCells = mutableSetOf<RegionCell>()
             for (j in gridPoints.indices) {
                 if (haversineMeters(p.lon, p.lat, gridPoints[j].lon, gridPoints[j].lat) <= clusterRadius) {
                     sumVal += gridPoints[j].value
+                    regionCells.add(LondonRegionGrid.cellFor(gridPoints[j].lon, gridPoints[j].lat))
                     used[j] = true
                 }
             }
             places.add(GridPoint(p.lon, p.lat, sumVal))
+            placeRegionCells.add(regionCells)
         }
 
         if (places.size < 2) return emptyList()
@@ -1179,12 +1222,41 @@ class MetroBuilder(
 
         // STEP 2 — Build a place-to-place demand graph
         val n = places.size
+        val gravityAdj = Array(n) { DoubleArray(n) { 0.0 } }
+        val observedAdj = Array(n) { DoubleArray(n) { 0.0 } }
         val adj = Array(n) { DoubleArray(n) { 0.0 } }
+        var maxGravityDemand = 0.0
+        var maxObservedDemand = 0.0
+        var observedMatches = 0
+        var observedTotal = 0.0
         for (i in 0 until n) {
             for (j in i + 1 until n) {
                 val distKm = haversineMeters(places[i].lon, places[i].lat, places[j].lon, places[j].lat) / 1000.0
                 // Gravity model: demand = (m1 * m2) / d^1.5
-                val demand = (places[i].value * places[j].value) / (distKm.pow(1.5).coerceAtLeast(0.1))
+                val gravityDemand = (places[i].value * places[j].value) / (distKm.pow(1.5).coerceAtLeast(0.1))
+                val observedDemand =
+                    observedRegionDemand?.demandBetween(placeRegionCells[i], placeRegionCells[j]) ?: 0.0
+                gravityAdj[i][j] = gravityDemand
+                gravityAdj[j][i] = gravityDemand
+                observedAdj[i][j] = observedDemand
+                observedAdj[j][i] = observedDemand
+                maxGravityDemand = max(maxGravityDemand, gravityDemand)
+                if (observedDemand > 0.0) {
+                    maxObservedDemand = max(maxObservedDemand, observedDemand)
+                    observedMatches += 1
+                    observedTotal += observedDemand
+                }
+            }
+        }
+        for (i in 0 until n) {
+            for (j in i + 1 until n) {
+                val demand =
+                    combineGravityAndObservedDemand(
+                        gravityDemand = gravityAdj[i][j],
+                        observedDemand = observedAdj[i][j],
+                        maxGravityDemand = maxGravityDemand,
+                        maxObservedDemand = maxObservedDemand,
+                    )
                 adj[i][j] = demand
                 adj[j][i] = demand
             }
@@ -1194,6 +1266,12 @@ class MetroBuilder(
         val maxDemand = adj.maxOf { row -> row.maxOrNull() ?: 0.0 }
         val avgDemand = adj.sumOf { it.sum() } / (n * n).coerceAtLeast(1)
         dbg("STEP 2 — Demand graph built: maxDemand=${"%.1f".format(maxDemand)} avgDemand=${"%.1f".format(avgDemand)}")
+        if (observedRegionDemand != null) {
+            dbg(
+                "STEP 2 — NUMBAT observed demand matches: pairs=$observedMatches, " +
+                    "max=${"%.1f".format(maxObservedDemand)}, total=${"%.1f".format(observedTotal)}",
+            )
+        }
 
         // STEP 3 — Find long demand chains (discover corridors)
         val visitedEdges = mutableSetOf<Pair<Int, Int>>()
@@ -1331,6 +1409,52 @@ class MetroBuilder(
 
         val finalCorridors = mutableListOf<Pair<List<Int>, LineType>>()
 
+        fun corridorBearingVector(chain: List<Int>): Pair<Double, Double> {
+            if (chain.size < 2) return 0.0 to 0.0
+            val first = places[chain.first()]
+            val last = places[chain.last()]
+            val avgLatRad = Math.toRadians((first.lat + last.lat) / 2.0)
+            val dx = (last.lon - first.lon) * cos(avgLatRad) * 111_320.0
+            val dy = (last.lat - first.lat) * 110_540.0
+            return dx to dy
+        }
+
+        fun bearingSimilarity(a: List<Int>, b: List<Int>): Double {
+            val (ax, ay) = corridorBearingVector(a)
+            val (bx, by) = corridorBearingVector(b)
+            val aLen = hypot(ax, ay)
+            val bLen = hypot(bx, by)
+            if (aLen <= 0.0 || bLen <= 0.0) return 0.0
+            return abs((ax * bx + ay * by) / (aLen * bLen))
+        }
+
+        fun closeStationFraction(candidate: List<Int>, existing: List<Int>, thresholdMeters: Double): Double {
+            if (candidate.isEmpty() || existing.isEmpty()) return 0.0
+            val closeCount =
+                candidate.count { cIdx ->
+                    val c = places[cIdx]
+                    existing.any { eIdx ->
+                        val e = places[eIdx]
+                        haversineMeters(c.lon, c.lat, e.lon, e.lat) <= thresholdMeters
+                    }
+                }
+            return closeCount.toDouble() / candidate.size.toDouble()
+        }
+
+        fun isParallelToSelected(chain: List<Int>): Boolean =
+            finalCorridors.any { (selectedChain, selectedType) ->
+                val closeFraction = closeStationFraction(chain, selectedChain, thresholdMeters = 700.0)
+                val similarity = bearingSimilarity(chain, selectedChain)
+                val redundant = closeFraction >= 0.5 && similarity >= 0.85
+                if (redundant) {
+                    dbg(
+                        "    ✗ Parallel corridor rejected: ${chain.size} nodes near $selectedType " +
+                            "(close=${"%.0f".format(closeFraction * 100)}%, bearing=${"%.2f".format(similarity)})",
+                    )
+                }
+                redundant
+            }
+
         // PHASE 1: Select RADIAL_TRUNK by demand + length (global priority)
         dbg("STEP 8 — Type-aware selection (quotas: $maxRadials radials, $maxDistributors distributors, $maxOrbitals orbital)")
         dbg("  Phase 1: Selecting radial trunks (by demand)...")
@@ -1352,7 +1476,7 @@ class MetroBuilder(
         for ((origIdx, chain, score) in radialScores) {
             if (finalCorridors.count { it.second == LineType.RADIAL_TRUNK } >= maxRadials) break
             val alreadyCovered = chain.count { idx -> finalCorridors.any { it.first.contains(idx) } }
-            if (alreadyCovered < chain.size * 0.5) {
+            if (alreadyCovered < chain.size * 0.5 && !isParallelToSelected(chain)) {
                 finalCorridors.add(chain to LineType.RADIAL_TRUNK)
                 dbg("    ✓ Radial ${finalCorridors.size}: ${chain.size} nodes, demand-score=${"%.0f".format(score)}")
             }
@@ -1372,7 +1496,7 @@ class MetroBuilder(
         for ((chain, score) in distributorScores) {
             if (finalCorridors.count { it.second == LineType.CORE_DISTRIBUTOR } >= maxDistributors) break
             val alreadyCovered = chain.count { idx -> finalCorridors.any { it.first.contains(idx) } }
-            if (alreadyCovered < chain.size * 0.4) { // allow more overlap for distributors
+            if (alreadyCovered < chain.size * 0.4 && !isParallelToSelected(chain)) { // allow more overlap for distributors
                 finalCorridors.add(chain to LineType.CORE_DISTRIBUTOR)
                 dbg("    ✓ Distributor ${finalCorridors.size}: ${chain.size} nodes, density-score=${"%.0f".format(score)}")
             }
@@ -1456,7 +1580,7 @@ class MetroBuilder(
                 // promote best available core distributor not already selected
                 val selectedDistributor =
                     distributorScores.map { it.first }.firstOrNull { chain ->
-                        finalCorridors.none { it.first == chain }
+                        finalCorridors.none { it.first == chain } && !isParallelToSelected(chain)
                     }
                 if (selectedDistributor != null) {
                     finalCorridors.add(selectedDistributor to LineType.CORE_DISTRIBUTOR)
@@ -1483,7 +1607,7 @@ class MetroBuilder(
 
             for ((chain, length) in orbitalScores) {
                 val alreadyCovered = chain.count { idx -> finalCorridors.any { it.first.contains(idx) } }
-                if (alreadyCovered < chain.size * 0.3) { // allow small overlap for orbital connectivity
+                if (alreadyCovered < chain.size * 0.3 && !isParallelToSelected(chain)) { // allow small overlap for orbital connectivity
                     finalCorridors.add(chain to LineType.ORBITAL)
                     dbg("    ✓ Orbital added (problem-driven): ${chain.size} nodes, length=${"%.1f".format(length / 1000)} km")
                     break
@@ -1904,11 +2028,26 @@ class MetroBuilder(
         // single shared station at the population-weighted midpoint. This produces a genuine
         // shared node (one map dot carrying both line colours) not two nearly-coincident dots.
         val snappedLines = snapInterchangeStations(builtLines, snapRadiusMeters = 500.0)
+        val consolidatedLines =
+            consolidateStationClusters(
+                snappedLines,
+                mergeRadiusMeters = 900.0,
+                maxRouteLengthChangeRatio = 0.12,
+                minStationsPerLine = minStationsPerLine,
+            )
 
-        // POST-BUILD: Compute suggested trains per hour for each line
-        val linesWithTph = computeTrainsPerHour(snappedLines)
+        // POST-BUILD: Estimate economically sensible construction methods and compute suggested service levels
+        val linesWithBuildEstimates =
+            estimateBuildTechnology(
+                consolidatedLines,
+                centerLon = centerLon,
+                centerLat = centerLat,
+                coreRadiusMeters = coreRadius,
+                ringRadiusMeters = ringRadius,
+            )
+        val linesWithTph = computeTrainsPerHour(linesWithBuildEstimates)
         linesWithTph.forEach { line ->
-            dbg("  ${line.id}: ${line.trainsPerHour} trains/hr")
+            dbg("  ${line.id}: ${line.trainsPerHour} trains/hr, cost=£${"%.1f".format(line.cost / 1_000_000_000.0)}bn")
         }
 
         return linesWithTph
@@ -1997,5 +2136,252 @@ class MetroBuilder(
         }
 
         return current
+    }
+
+    internal fun consolidateStationClusters(
+        lines: List<Line>,
+        mergeRadiusMeters: Double = 900.0,
+        maxRouteLengthChangeRatio: Double = 0.12,
+        minStationsPerLine: Int = 3,
+    ): List<Line> {
+        data class StationRef(
+            val lineIndex: Int,
+            val stationIndex: Int,
+            val station: Station,
+        )
+
+        var current = lines
+        var clusterCounter = 1
+
+        repeat(4) {
+            val refs =
+                current.flatMapIndexed { lineIndex, line ->
+                    line.stations.mapIndexed { stationIndex, station ->
+                        StationRef(lineIndex, stationIndex, station)
+                    }
+                }
+            val parent = IntArray(refs.size) { it }
+
+            fun find(i: Int): Int {
+                var x = i
+                while (parent[x] != x) {
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                }
+                return x
+            }
+
+            fun union(
+                a: Int,
+                b: Int,
+            ) {
+                val ra = find(a)
+                val rb = find(b)
+                if (ra != rb) parent[rb] = ra
+            }
+
+            for (i in refs.indices) {
+                for (j in i + 1 until refs.size) {
+                    if (refs[i].lineIndex == refs[j].lineIndex) continue
+                    val d =
+                        haversineMeters(
+                            refs[i].station.lon,
+                            refs[i].station.lat,
+                            refs[j].station.lon,
+                            refs[j].station.lat,
+                        )
+                    if (d <= mergeRadiusMeters) union(i, j)
+                }
+            }
+
+            val clusters = refs.indices.groupBy { find(it) }.values
+            var changed = false
+            var next = current
+
+            for (clusterIndexes in clusters) {
+                if (clusterIndexes.size < 2) continue
+                val clusterRefs = clusterIndexes.map { refs[it] }
+                val lineIndexes = clusterRefs.map { it.lineIndex }.toSet()
+                if (lineIndexes.size < 2) continue
+
+                // Do not merge two distinct stops on the same route; that creates accidental short-cuts.
+                if (clusterRefs.groupingBy { it.lineIndex }.eachCount().any { it.value > 1 }) continue
+
+                val wSum = clusterRefs.sumOf { it.station.catchmentPopulation.coerceAtLeast(1.0) }
+                val sharedLon = clusterRefs.sumOf { it.station.lon * it.station.catchmentPopulation.coerceAtLeast(1.0) } / wSum
+                val sharedLat = clusterRefs.sumOf { it.station.lat * it.station.catchmentPopulation.coerceAtLeast(1.0) } / wSum
+                val sharedId =
+                    clusterRefs
+                        .map { it.station.id }
+                        .firstOrNull { it.startsWith("INT_") }
+                        ?: "INT_CLUSTER_${clusterCounter++}"
+                val shared = Station(sharedId, sharedLon, sharedLat, wSum)
+                val idsToReplace = clusterRefs.map { it.station.id }.toSet()
+
+                val candidate =
+                    next.map { line ->
+                        if (line.stations.none { it.id in idsToReplace }) return@map line
+                        val newStations = line.stations.map { if (it.id in idsToReplace) shared else it }
+                        val newLength = lineLengthMeters(newStations)
+                        line.copy(stations = newStations, lengthMeters = newLength)
+                    }
+
+                val valid =
+                    candidate.indices.all { idx ->
+                        val oldLine = next[idx]
+                        val newLine = candidate[idx]
+                        val hasConsecutiveDuplicate =
+                            newLine.stations.zipWithNext().any { (a, b) -> a.id == b.id }
+                        val enoughStations = newLine.stations.distinctBy { it.id }.size >= minStationsPerLine
+                        val oldLength = oldLine.lengthMeters.coerceAtLeast(1.0)
+                        val changeRatio = abs(newLine.lengthMeters - oldLine.lengthMeters) / oldLength
+                        !hasConsecutiveDuplicate && enoughStations && changeRatio <= maxRouteLengthChangeRatio
+                    }
+
+                if (valid) {
+                    next = candidate
+                    changed = true
+                    dbg("  ✦ Consolidated ${clusterRefs.size} nearby cross-line stations into $sharedId")
+                }
+            }
+
+            current = next
+            if (!changed) return@repeat
+        }
+
+        return current
+    }
+
+    internal fun estimateBuildTechnology(
+        lines: List<Line>,
+        centerLon: Double,
+        centerLat: Double,
+        coreRadiusMeters: Double,
+        ringRadiusMeters: Double,
+    ): List<Line> {
+        if (lines.isEmpty()) return lines
+        val stationValues =
+            lines
+                .flatMap { it.stations }
+                .map { it.catchmentPopulation }
+                .filter { it.isFinite() && it > 0.0 }
+                .sorted()
+        val highValueThreshold =
+            if (stationValues.isEmpty()) {
+                Double.POSITIVE_INFINITY
+            } else {
+                stationValues[(stationValues.size * 0.75).coerceAtMost(stationValues.lastIndex.toDouble()).toInt()]
+            }
+
+        return lines.map { line ->
+            val segments =
+                line.stations.zipWithNext().map { (from, to) ->
+                    val length = haversineMeters(from.lon, from.lat, to.lon, to.lat)
+                    val midLon = (from.lon + to.lon) / 2.0
+                    val midLat = (from.lat + to.lat) / 2.0
+                    val distToCenter = haversineMeters(midLon, midLat, centerLon, centerLat)
+                    val avgValue = (from.catchmentPopulation + to.catchmentPopulation) / 2.0
+                    val technology =
+                        when {
+                            distToCenter <= coreRadiusMeters * 0.9 -> AlignmentTechnology.DEEP_BORE_TUNNEL
+                            line.type == LineType.CORE_DISTRIBUTOR && distToCenter <= coreRadiusMeters * 1.15 ->
+                                AlignmentTechnology.DEEP_BORE_TUNNEL
+                            avgValue >= highValueThreshold && distToCenter <= ringRadiusMeters ->
+                                AlignmentTechnology.DEEP_BORE_TUNNEL
+                            distToCenter <= ringRadiusMeters * 1.15 -> AlignmentTechnology.SUBSURFACE_TUNNEL
+                            else -> AlignmentTechnology.SURFACE_OR_ELEVATED
+                        }
+                    val perKm =
+                        when (technology) {
+                            AlignmentTechnology.DEEP_BORE_TUNNEL -> 450_000_000.0
+                            AlignmentTechnology.SUBSURFACE_TUNNEL -> 250_000_000.0
+                            AlignmentTechnology.SURFACE_OR_ELEVATED -> 90_000_000.0
+                        }
+                    BuildSegmentEstimate(
+                        fromStationId = from.id,
+                        toStationId = to.id,
+                        lengthMeters = length,
+                        technology = technology,
+                        civilCost = length / 1000.0 * perKm,
+                        rationale = rationaleForTechnology(technology),
+                    )
+                }
+
+            val civilCost = segments.sumOf { it.civilCost }
+            val stationCost =
+                line.stations.sumOf { station ->
+                    val adjacentTech =
+                        segments
+                            .filter { it.fromStationId == station.id || it.toStationId == station.id }
+                            .map { it.technology }
+                    val stationTech =
+                        when {
+                            AlignmentTechnology.DEEP_BORE_TUNNEL in adjacentTech -> AlignmentTechnology.DEEP_BORE_TUNNEL
+                            AlignmentTechnology.SUBSURFACE_TUNNEL in adjacentTech -> AlignmentTechnology.SUBSURFACE_TUNNEL
+                            else -> AlignmentTechnology.SURFACE_OR_ELEVATED
+                        }
+                    when (stationTech) {
+                        AlignmentTechnology.DEEP_BORE_TUNNEL -> 300_000_000.0
+                        AlignmentTechnology.SUBSURFACE_TUNNEL -> 150_000_000.0
+                        AlignmentTechnology.SURFACE_OR_ELEVATED -> 60_000_000.0
+                    }
+                }
+            val landAllowance =
+                segments.sumOf { segment ->
+                    val allowance =
+                        when (segment.technology) {
+                            AlignmentTechnology.DEEP_BORE_TUNNEL -> 0.08
+                            AlignmentTechnology.SUBSURFACE_TUNNEL -> 0.15
+                            AlignmentTechnology.SURFACE_OR_ELEVATED -> 0.10
+                        }
+                    segment.civilCost * allowance
+                }
+            val preContingency = civilCost + stationCost + landAllowance
+            val contingency = preContingency * 0.30
+            val estimate =
+                LineBuildEstimate(
+                    segments = segments,
+                    stationCost = stationCost,
+                    landInterfaceAllowance = landAllowance,
+                    contingency = contingency,
+                    totalCost = preContingency + contingency,
+                    deepBoreMeters =
+                        segments
+                            .filter { it.technology == AlignmentTechnology.DEEP_BORE_TUNNEL }
+                            .sumOf { it.lengthMeters },
+                    subsurfaceMeters =
+                        segments
+                            .filter { it.technology == AlignmentTechnology.SUBSURFACE_TUNNEL }
+                            .sumOf { it.lengthMeters },
+                    surfaceOrElevatedMeters =
+                        segments
+                            .filter { it.technology == AlignmentTechnology.SURFACE_OR_ELEVATED }
+                            .sumOf { it.lengthMeters },
+                    recommendation = recommendationForSegments(segments),
+                )
+
+            line.copy(cost = estimate.totalCost, buildEstimate = estimate)
+        }
+    }
+
+    private fun lineLengthMeters(stations: List<Station>): Double =
+        stations.zipWithNext().sumOf { (a, b) -> haversineMeters(a.lon, a.lat, b.lon, b.lat) }
+
+    private fun rationaleForTechnology(technology: AlignmentTechnology): String =
+        when (technology) {
+            AlignmentTechnology.DEEP_BORE_TUNNEL -> "Dense central/interchange segment: avoid demolition and severe surface disruption."
+            AlignmentTechnology.SUBSURFACE_TUNNEL -> "Inner urban segment: shallow tunnelling balances cost and surface constraints."
+            AlignmentTechnology.SURFACE_OR_ELEVATED -> "Outer lower-density segment: surface or viaduct is the economical default if corridor land is available."
+        }
+
+    private fun recommendationForSegments(segments: List<BuildSegmentEstimate>): String {
+        val deepKm = segments.filter { it.technology == AlignmentTechnology.DEEP_BORE_TUNNEL }.sumOf { it.lengthMeters } / 1000.0
+        val shallowKm = segments.filter { it.technology == AlignmentTechnology.SUBSURFACE_TUNNEL }.sumOf { it.lengthMeters } / 1000.0
+        val surfaceKm = segments.filter { it.technology == AlignmentTechnology.SURFACE_OR_ELEVATED }.sumOf { it.lengthMeters } / 1000.0
+        return when {
+            deepKm >= shallowKm && deepKm >= surfaceKm -> "Build mainly as deep-bore tunnel through dense central areas; it costs more per km but avoids large-scale demolition."
+            shallowKm >= surfaceKm -> "Use mostly subsurface tunnel, with deep-bore sections where central constraints are highest."
+            else -> "Use surface/elevated track on outer sections and tunnel only where urban constraints require it."
+        }
     }
 }

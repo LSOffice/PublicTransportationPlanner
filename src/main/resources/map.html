@@ -5,6 +5,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Public Transport Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
@@ -31,7 +34,7 @@
       --r: 5px;
       --r-lg: 10px;
       --shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.07);
-      --font: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
       --ease: cubic-bezier(0.4, 0, 0.2, 1);
       --panel-w: 272px;
     }
@@ -54,6 +57,17 @@
     body {
       font-family: var(--font);
       color: var(--text);
+    }
+
+    button,
+    input,
+    textarea,
+    select,
+    .leaflet-container,
+    .leaflet-control,
+    .leaflet-popup-content,
+    .leaflet-tooltip {
+      font-family: var(--font) !important;
     }
 
     #map {
@@ -360,6 +374,14 @@
       border-radius: 4px !important;
       box-shadow: 0 1px 5px rgba(0, 0, 0, 0.28) !important;
       letter-spacing: 0.01em;
+      min-width: 82px !important;
+      text-align: center !important;
+      white-space: nowrap !important;
+    }
+
+    .line-label {
+      width: auto !important;
+      height: auto !important;
     }
 
     /* Station name labels */
@@ -368,12 +390,27 @@
       border: 1px solid rgba(0, 0, 0, 0.2) !important;
       border-radius: 3px !important;
       padding: 2px 5px !important;
+      font-family: var(--font) !important;
       font-size: 11px !important;
       font-weight: 600 !important;
       color: #1a1a2e !important;
       white-space: nowrap !important;
       pointer-events: none !important;
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+    }
+
+    .station-label-line {
+      display: block;
+      margin-bottom: 1px;
+      font-size: 9px;
+      font-weight: 800;
+      color: #1d4ed8;
+      line-height: 1.05;
+    }
+
+    .station-label-name {
+      display: block;
+      line-height: 1.15;
     }
 
     .station-label.leaflet-tooltip-right::before {
@@ -424,6 +461,9 @@
       <div class="btn-group" style="margin-top:6px;">
         <button id="hideSuggestBtn" class="btn btn-ghost" disabled>Hide Routes</button>
         <button id="tubeMapBtn" class="btn btn-ghost" disabled>Tube Map</button>
+      </div>
+      <div class="btn-group" style="margin-top:6px;">
+        <button id="lineBoardsBtn" class="btn btn-ghost" disabled>Line Boards</button>
       </div>
     </div>
 
@@ -485,6 +525,10 @@
     const zoomRange = document.getElementById("zoomRange");
     const zoomValue = document.getElementById("zoomValue");
     const drawBtn = document.getElementById("drawBtn");
+    const suggestBtn = document.getElementById("suggestBtn");
+    const hideSuggestBtn = document.getElementById("hideSuggestBtn");
+    const tubeMapBtn = document.getElementById("tubeMapBtn");
+    const lineBoardsBtn = document.getElementById("lineBoardsBtn");
     const areaDisplay = document.getElementById("areaDisplay");
     const messageEl = document.getElementById("message");
     const centroidEl = document.getElementById("centroid");
@@ -492,6 +536,7 @@
     const neighPropsEl = document.getElementById("neighProps");
 
     // Grid overlay: layer and cached data
+    const noDataLayer = L.layerGroup().addTo(map);
     const gridLayer = L.layerGroup().addTo(map);
     // Suggestions overlay: stations and proposed lines
     const suggestionsLayer = L.layerGroup().addTo(map);
@@ -573,6 +618,87 @@
       }
       const t = (v - minV) / (maxV - minV);
       return minR + t * (maxR - minR);
+    }
+
+    function buildLoadedDataIndex(points) {
+      const binSize = 0.02;
+      const bins = new Map();
+      for (const p of points) {
+        const bx = Math.floor(p.lon / binSize);
+        const by = Math.floor(p.lat / binSize);
+        const key = `${bx},${by}`;
+        if (!bins.has(key)) bins.set(key, []);
+        bins.get(key).push(p);
+      }
+      return { bins, binSize };
+    }
+
+    function hasLoadedDataNear(index, lon, lat, maxMeters) {
+      const bx = Math.floor(lon / index.binSize);
+      const by = Math.floor(lat / index.binSize);
+      const searchBins = Math.max(1, Math.ceil((maxMeters / 111000) / index.binSize));
+      for (let ix = bx - searchBins; ix <= bx + searchBins; ix++) {
+        for (let iy = by - searchBins; iy <= by + searchBins; iy++) {
+          const bucket = index.bins.get(`${ix},${iy}`);
+          if (!bucket) continue;
+          for (const p of bucket) {
+            if (haversineMeters(lat, lon, p.lat, p.lon) <= maxMeters) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function drawNoDataOverlay(poly, csv, areaKm2) {
+      noDataLayer.clearLayers();
+      const style = {
+        color: "#b91c1c",
+        weight: 2.5,
+        opacity: 1,
+        fillColor: "#fecaca",
+        fillOpacity: 0.42,
+        dashArray: null,
+      };
+
+      if (!csv.length) {
+        L.geoJSON(poly, { style }).addTo(noDataLayer).bindPopup("No loaded population data for this selected area");
+        return 1;
+      }
+
+      const bbox = turf.bbox(poly);
+      const cellSideKm = areaKm2 > 12000 ? 5 : areaKm2 > 3000 ? 3 : areaKm2 > 700 ? 2 : 1;
+      const coverageRadiusMeters = Math.max(850, cellSideKm * 500);
+      const index = buildLoadedDataIndex(csv);
+      let grid;
+      try {
+        grid = turf.squareGrid(bbox, cellSideKm, { units: "kilometers" });
+      } catch (e) {
+        console.warn("no-data grid failed", e);
+        return 0;
+      }
+
+      let noDataCount = 0;
+      const noDataFeatures = [];
+      for (const cell of grid.features) {
+        const center = turf.center(cell);
+        const coords = center.geometry.coordinates;
+        if (!turf.booleanPointInPolygon(center, poly)) continue;
+        if (!hasLoadedDataNear(index, coords[0], coords[1], coverageRadiusMeters)) {
+          noDataFeatures.push(cell);
+          noDataCount += 1;
+        }
+      }
+
+      if (noDataFeatures.length > 0) {
+        L.geoJSON({ type: "FeatureCollection", features: noDataFeatures }, {
+          style,
+          onEachFeature: (feature, layer) => {
+            layer.bindPopup("No loaded population data for this area");
+          },
+        }).addTo(noDataLayer);
+      }
+
+      return noDataCount;
     }
 
     // Initialize range and text
@@ -676,16 +802,22 @@
           console.error("clearSuggestions click failed", e);
         }
       });
-      document
-        .getElementById("tubeMapBtn")
-        .addEventListener("click", function () {
-          try {
-            generateTubeMap(window._lastLineData);
-          } catch (e) {
-            console.error("tubeMapBtn click failed", e);
-            messageEl.textContent = "Tube map generation error";
-          }
-        });
+      tubeMapBtn.addEventListener("click", function () {
+        try {
+          generateTubeMap(window._lastLineData);
+        } catch (e) {
+          console.error("tubeMapBtn click failed", e);
+          messageEl.textContent = "Tube map generation error";
+        }
+      });
+      lineBoardsBtn.addEventListener("click", function () {
+        try {
+          generateLineBoards(window._lastLineData);
+        } catch (e) {
+          console.error("lineBoardsBtn click failed", e);
+          messageEl.textContent = "Line board generation error";
+        }
+      });
     } catch (e) {
       console.warn("Failed to bind suggestion buttons", e);
     }
@@ -694,6 +826,9 @@
       drawnItems.clearLayers();
       try {
         gridLayer.clearLayers();
+      } catch (e) { }
+      try {
+        noDataLayer.clearLayers();
       } catch (e) { }
       try {
         suggestionsLayer.clearLayers();
@@ -791,6 +926,7 @@
             const csv = await loadGridCsv();
             try {
               gridLayer.clearLayers();
+              noDataLayer.clearLayers();
             } catch (e) { }
             let count = 0;
             const poly = geojson; // drawn polygon GeoJSON
@@ -805,6 +941,7 @@
                 continue;
               }
             }
+            const noDataTiles = drawNoDataOverlay(poly, csv, areaKm2);
             if (matches.length > 0) {
               const vals = matches
                 .map((m) => m.value)
@@ -841,8 +978,8 @@
             }
             messageEl.textContent =
               count > 0
-                ? `Found ${count} grid cells intersecting selection`
-                : "No grid cells intersect selection";
+                ? `Found ${count} grid cells intersecting selection${noDataTiles > 0 ? `; ${noDataTiles} no-data areas shaded red` : ""}`
+                : "No grid cells intersect selection; selected area shaded red";
 
             // Store matches and enable the Suggestions button; user triggers suggestions manually
             try {
@@ -850,7 +987,7 @@
               if (matches.length > 0) {
                 suggestBtn.disabled = false;
                 hideSuggestBtn.disabled = true;
-                messageEl.textContent = `Found ${matches.length} grid points inside selection — click Suggestions to request routes`;
+                messageEl.textContent = `Found ${matches.length} grid points inside selection${noDataTiles > 0 ? `; ${noDataTiles} no-data areas shaded red` : ""} — click Suggestions to request routes`;
               } else {
                 suggestBtn.disabled = true;
                 hideSuggestBtn.disabled = true;
@@ -880,13 +1017,309 @@
       } catch (e) { }
       // show population density grid again
       try {
+        if (!map.hasLayer(noDataLayer)) map.addLayer(noDataLayer);
         if (!map.hasLayer(gridLayer)) map.addLayer(gridLayer);
       } catch (e) { }
       hideSuggestBtn.disabled = true;
       suggestBtn.disabled =
         window._lastMatches && window._lastMatches.length ? false : true;
-      document.getElementById("tubeMapBtn").disabled = true;
+      tubeMapBtn.disabled = true;
+      lineBoardsBtn.disabled = true;
       messageEl.textContent = "";
+    }
+
+    function stationKey(st) {
+      return `${Number(st.lon).toFixed(6)},${Number(st.lat).toFixed(6)}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatLineType(type) {
+      return String(type || "RADIAL_TRUNK").replace(/_/g, " ");
+    }
+
+    function formatMoney(value) {
+      const n = Number(value || 0);
+      if (n >= 1_000_000_000) return `£${(n / 1_000_000_000).toFixed(1)}bn`;
+      if (n >= 1_000_000) return `£${Math.round(n / 1_000_000).toLocaleString()}m`;
+      return `£${Math.round(n).toLocaleString()}`;
+    }
+
+    function formatKm(meters) {
+      return `${(Number(meters || 0) / 1000).toFixed(1)} km`;
+    }
+
+    function technologyLabel(technology) {
+      return {
+        DEEP_BORE_TUNNEL: "Deep-bore tunnel",
+        SUBSURFACE_TUNNEL: "Subsurface tunnel",
+        SURFACE_OR_ELEVATED: "Surface/elevated",
+      }[technology] || "Unknown";
+    }
+
+    function technologyStyle(technology) {
+      if (technology === "DEEP_BORE_TUNNEL") return { color: "#111827", weight: 8, opacity: 0.45 };
+      if (technology === "SUBSURFACE_TUNNEL") return { color: "#d97706", weight: 8, opacity: 0.45, dashArray: "10, 7" };
+      return { color: "#16a34a", weight: 8, opacity: 0.45, dashArray: "3, 7" };
+    }
+
+    function buildEstimateSummary(estimate) {
+      if (!estimate) return "";
+      return `Cost ${formatMoney(estimate.total_cost)} · deep ${formatKm(estimate.deep_bore_m)} · ` +
+        `subsurface ${formatKm(estimate.subsurface_m)} · surface/elevated ${formatKm(estimate.surface_or_elevated_m)}`;
+    }
+
+    function networkBuildEstimate(lines) {
+      const estimates = (lines || []).map((line) => line.build_estimate).filter(Boolean);
+      return {
+        total: estimates.reduce((sum, estimate) => sum + Number(estimate.total_cost || 0), 0),
+        deep: estimates.reduce((sum, estimate) => sum + Number(estimate.deep_bore_m || 0), 0),
+        subsurface: estimates.reduce((sum, estimate) => sum + Number(estimate.subsurface_m || 0), 0),
+        surface: estimates.reduce((sum, estimate) => sum + Number(estimate.surface_or_elevated_m || 0), 0),
+      };
+    }
+
+    function haversineMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = Math.PI / 180;
+      const dLat = (lat2 - lat1) * toRad;
+      const dLon = (lon2 - lon1) * toRad;
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function normalizeStationBaseName(name) {
+      return String(name || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .replace(/\s+(station|underground station|railway station|tube station)$/i, "")
+        .toLocaleLowerCase();
+    }
+
+    function lineIdsForStation(st, lines) {
+      return (st.lines || [])
+        .map((lineIndex) => lines[lineIndex]?.id)
+        .filter(Boolean);
+    }
+
+    function directionalSuffix(st, centroid) {
+      const avgLatRad = ((st.lat + centroid.lat) / 2) * Math.PI / 180;
+      const dx = (st.lon - centroid.lon) * Math.cos(avgLatRad);
+      const dy = st.lat - centroid.lat;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+      if (absDx > absDy * 1.45) return dx >= 0 ? "East" : "West";
+      if (absDy > absDx * 1.45) return dy >= 0 ? "North" : "South";
+      if (dy >= 0 && dx >= 0) return "North East";
+      if (dy >= 0 && dx < 0) return "North West";
+      if (dy < 0 && dx >= 0) return "South East";
+      return "South West";
+    }
+
+    function resolveStationNames(allStations, baseNamesByKey, lines) {
+      const groups = new Map();
+      allStations.forEach((st, key) => {
+        const base = String(baseNamesByKey.get(key) || st.id || "Station").trim() || "Station";
+        const norm = normalizeStationBaseName(base) || String(st.id || key).toLocaleLowerCase();
+        if (!groups.has(norm)) groups.set(norm, []);
+        groups.get(norm).push({ key, st, base });
+      });
+
+      const nameByKey = new Map();
+      const nameById = {};
+      const globallyUsed = new Map();
+
+      groups.forEach((items) => {
+        const distinctCoords = new Set(items.map((item) => item.key));
+        const needsSuffix = distinctCoords.size > 1;
+        const centroid = {
+          lon: items.reduce((sum, item) => sum + Number(item.st.lon), 0) / items.length,
+          lat: items.reduce((sum, item) => sum + Number(item.st.lat), 0) / items.length,
+        };
+
+        items.forEach((item) => {
+          const baseResolved = needsSuffix ? `${item.base} ${directionalSuffix(item.st, centroid)}` : item.base;
+          let resolved = baseResolved;
+          let resolvedKey = resolved.toLocaleLowerCase();
+
+          if (globallyUsed.has(resolvedKey)) {
+            const fallbackLine = lineIdsForStation(item.st, lines)[0] || String(item.st.id || "").replace(/^st_/, "").replace(/_/g, "-");
+            resolved = `${baseResolved} ${fallbackLine || "Station"}`;
+            resolvedKey = resolved.toLocaleLowerCase();
+          }
+
+          const seen = globallyUsed.get(resolvedKey) || 0;
+          globallyUsed.set(resolvedKey, seen + 1);
+          if (seen > 0) resolved = `${resolved} ${seen + 1}`;
+
+          nameByKey.set(item.key, resolved);
+          nameById[item.st.id] = resolved;
+        });
+      });
+
+      return { nameByKey, nameById };
+    }
+
+    function computeWalkingInterchanges(allStations, baseNamesByKey, stationNames) {
+      const links = [];
+      const stations = Array.from(allStations.entries()).map(([key, st]) => ({
+        key,
+        st,
+        norm: normalizeStationBaseName(baseNamesByKey.get(key)),
+      }));
+
+      for (let i = 0; i < stations.length; i++) {
+        for (let j = i + 1; j < stations.length; j++) {
+          const a = stations[i];
+          const b = stations[j];
+          if (!a.norm || a.norm !== b.norm || a.key === b.key) continue;
+          const distance = haversineMeters(a.st.lat, a.st.lon, b.st.lat, b.st.lon);
+          if (distance <= 500) {
+            links.push({
+              fromKey: a.key,
+              toKey: b.key,
+              distance,
+              minutes: Math.max(1, Math.ceil(distance / 80)),
+              fromName: stationNames.get(a.key) || a.st.id,
+              toName: stationNames.get(b.key) || b.st.id,
+            });
+          }
+        }
+      }
+      return links;
+    }
+
+    function consolidateNearbyDisplayNames(allStations, baseNamesByKey, stationNames) {
+      const displayNames = new Map(stationNames);
+      const items = Array.from(allStations.entries()).map(([key, st]) => ({
+        key,
+        st,
+        base: String(baseNamesByKey.get(key) || stationNames.get(key) || st.id || "Station").trim(),
+      }));
+
+      const byBase = new Map();
+      items.forEach((item) => {
+        const norm = normalizeStationBaseName(item.base);
+        if (!norm) return;
+        if (!byBase.has(norm)) byBase.set(norm, []);
+        byBase.get(norm).push(item);
+      });
+
+      byBase.forEach((group) => {
+        const used = new Set();
+        group.forEach((seed) => {
+          if (used.has(seed.key)) return;
+          const cluster = [seed];
+          used.add(seed.key);
+          for (const candidate of group) {
+            if (used.has(candidate.key)) continue;
+            const nearAny = cluster.some((item) =>
+              haversineMeters(item.st.lat, item.st.lon, candidate.st.lat, candidate.st.lon) <= 1000
+            );
+            if (nearAny) {
+              cluster.push(candidate);
+              used.add(candidate.key);
+            }
+          }
+          if (cluster.length < 2) return;
+          const canonical = cluster
+            .map((item) => String(baseNamesByKey.get(item.key) || displayNames.get(item.key) || item.st.id))
+            .sort((a, b) => a.length - b.length || a.localeCompare(b))[0];
+          cluster.forEach((item) => displayNames.set(item.key, canonical));
+        });
+      });
+
+      return displayNames;
+    }
+
+    function walkingNotesForKey(key, links) {
+      return links
+        .filter((link) => link.fromKey === key || link.toKey === key)
+        .map((link) => {
+          const otherName = link.fromKey === key ? link.toName : link.fromName;
+          return `${link.minutes} min walk to ${otherName}`;
+        });
+    }
+
+    function refreshStationPresentation(ctx) {
+      const resolved = resolveStationNames(ctx.allStations, ctx.baseNamesByKey, ctx.data.lines);
+      const displayNames = consolidateNearbyDisplayNames(ctx.allStations, ctx.baseNamesByKey, resolved.nameByKey);
+      const walkingLinks = computeWalkingInterchanges(ctx.allStations, ctx.baseNamesByKey, displayNames);
+
+      const nameById = {};
+      ctx.allStations.forEach((st, key) => {
+        nameById[st.id] = displayNames.get(key) || resolved.nameById[st.id] || st.id;
+      });
+      window._stationNames = nameById;
+      window._stationNameByKey = Object.fromEntries(displayNames.entries());
+      window._stationWalkingLinks = walkingLinks;
+
+      (ctx.walkingLayers || []).forEach((layer) => {
+        try { suggestionsLayer.removeLayer(layer); } catch (e) { }
+      });
+      ctx.walkingLayers = [];
+
+      walkingLinks.forEach((link) => {
+        const a = ctx.allStations.get(link.fromKey);
+        const b = ctx.allStations.get(link.toKey);
+        if (!a || !b) return;
+        const label = `${link.minutes} min walk to ${link.toName}`;
+        const connector = L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+          color: "#64748b",
+          weight: 2,
+          opacity: 0.75,
+          dashArray: "4, 6",
+          interactive: true,
+        }).addTo(suggestionsLayer);
+        connector.bindTooltip(label, { sticky: true });
+        connector.bindPopup(
+          `<strong>Walking interchange</strong><br/>` +
+          `${escapeHtml(link.fromName)} ↔ ${escapeHtml(link.toName)}<br/>` +
+          `${link.minutes} min walk · ${Math.round(link.distance)} m`
+        );
+        try { connector.bringToBack(); } catch (e) { }
+        ctx.walkingLayers.push(connector);
+      });
+
+      ctx.allStations.forEach((st, key) => {
+        const marker = ctx.markersByKey.get(key);
+        if (!marker) return;
+        const name = displayNames.get(key) || st.id;
+        const stationLineIds = (st.lines || [])
+          .map((lineIndex) => ctx.data.lines[lineIndex]?.id)
+          .filter(Boolean)
+          .join(" / ");
+        marker.setTooltipContent(
+          `${stationLineIds ? `<span class="station-label-line">${escapeHtml(stationLineIds)}</span>` : ""}` +
+          `<span class="station-label-name">${escapeHtml(name)}</span>`
+        );
+        const isTransfer = ctx.transfers.has(key);
+        const lineSummary = (st.lines || [])
+          .map((lineIndex) => ctx.data.lines[lineIndex])
+          .filter(Boolean)
+          .map((line) => `${line.id} ${formatLineType(line.type)}`)
+          .join(", ");
+        const walkingNotes = walkingNotesForKey(key, walkingLinks);
+        marker.getPopup().setContent(
+          `<strong>${escapeHtml(name)}</strong><br/>` +
+          `ID: ${escapeHtml(st.id)}` +
+          `${isTransfer ? '<br/>Interchange' : ''}` +
+          `${lineSummary ? `<br/>Lines: ${escapeHtml(lineSummary)}` : ''}<br/>` +
+          `Value: ${Number(st.value || 0).toLocaleString()}<br/>` +
+          `${Number(st.lon).toFixed(6)}, ${Number(st.lat).toFixed(6)}` +
+          `${walkingNotes.length ? `<br/>${walkingNotes.map(escapeHtml).join("<br/>")}` : ""}`
+        );
+      });
+
+      return { stationNames: displayNames, walkingLinks };
     }
 
     function showSuggestions() {
@@ -901,6 +1334,7 @@
         // hide the population density grid layer while showing suggestions
         try {
           if (map.hasLayer(gridLayer)) map.removeLayer(gridLayer);
+          if (map.hasLayer(noDataLayer)) map.removeLayer(noDataLayer);
         } catch (e) { }
 
         // POST matches to /suggestions endpoint
@@ -937,6 +1371,7 @@
             };
 
             const created = {};
+            const markersByKey = new Map();
             const allLineBounds = [];
             const transfers = new Set();
 
@@ -944,14 +1379,15 @@
             const allStations = new Map();
             data.lines.forEach((line, li) => {
               line.stations.forEach((st) => {
-                const key = `${st.lon},${st.lat}`;
-                if (!allStations.has(key))
+                const key = stationKey(st);
+                if (!allStations.has(key)) {
                   allStations.set(key, { ...st, lines: [] });
+                }
                 allStations.get(key).lines.push(li);
               });
             });
             allStations.forEach((st) => {
-              if (st.lines.length > 1) transfers.add(`${st.lon},${st.lat}`);
+              if (st.lines.length > 1) transfers.add(stationKey(st));
             });
 
             // Render lines and stations
@@ -962,6 +1398,21 @@
                 lineTypeColors[lineType] ||
                 lineColors[li % lineColors.length];
               const latlngs = line.stations.map((st) => [st.lat, st.lon]);
+
+              (line.build_estimate?.segments || []).forEach((segment, segmentIndex) => {
+                const from = line.stations[segmentIndex];
+                const to = line.stations[segmentIndex + 1];
+                if (!from || !to) return;
+                const tech = L.polyline(
+                  [[from.lat, from.lon], [to.lat, to.lon]],
+                  technologyStyle(segment.technology)
+                ).addTo(suggestionsLayer);
+                tech.bindTooltip(
+                  `${line.id}: ${technologyLabel(segment.technology)} · ${formatKm(segment.length_m)} · ${formatMoney(segment.civil_cost)}`,
+                  { sticky: true }
+                );
+                try { tech.bringToBack(); } catch (e) { }
+              });
 
               // Use dashed style for loops
               const polylineStyle = isLoop
@@ -976,6 +1427,13 @@
               const poly = L.polyline(latlngs, polylineStyle).addTo(
                 suggestionsLayer,
               );
+              const estimateText = buildEstimateSummary(line.build_estimate);
+              poly.bindPopup(
+                `<strong>${escapeHtml(line.id)}</strong><br/>` +
+                `${escapeHtml(formatLineType(lineType))}${isLoop ? " · Loop" : ""}<br/>` +
+                `${estimateText ? `${escapeHtml(estimateText)}<br/>` : ""}` +
+                `${line.build_estimate?.recommendation ? escapeHtml(line.build_estimate.recommendation) : ""}`
+              );
 
               // Add label with line type and ID on the polyline
               const midIdx = Math.floor(latlngs.length / 2);
@@ -984,10 +1442,14 @@
                 const loopMarker = isLoop ? " ⭕" : "";
                 const tph = line.trains_per_hour || 0;
                 const tphLabel = tph > 0 ? ` · ${tph}/hr` : "";
+                const lineLabelText = `${line.id}${loopMarker}${tphLabel}`;
+                const lineLabelWidth = Math.max(92, lineLabelText.length * 8 + 18);
                 L.marker(midPoint, {
                   icon: L.divIcon({
                     className: "line-label",
-                    html: `<div style="background:${color};color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;font-size:12px;">${line.id}${loopMarker}${tphLabel}</div>`,
+                    iconSize: [lineLabelWidth, 22],
+                    iconAnchor: [lineLabelWidth / 2, 11],
+                    html: `<div style="background:${color};color:#fff;">${lineLabelText}</div>`,
                   }),
                 }).addTo(suggestionsLayer);
               }
@@ -995,7 +1457,7 @@
               allLineBounds.push(poly.getBounds());
 
               line.stations.forEach((st, si) => {
-                const key = `${st.lon},${st.lat}`;
+                const key = stationKey(st);
                 if (created[key]) return;
                 const isTransfer = transfers.has(key);
                 const radius = isTransfer
@@ -1019,14 +1481,29 @@
                   offset: [8, 0],
                 });
                 created[key] = m;
+                markersByKey.set(key, m);
               });
             });
 
             // Reverse-geocode each unique station using OSM Nominatim via the local proxy.
             // Names resolve progressively (1.1 s between requests, Nominatim usage policy).
-            // Resolved names are stored in window._stationNames (by station id) so the
-            // tube map can use them even if it is opened after geocoding has begun.
-            window._stationNames = window._stationNames || {};
+            // Resolved names are stored in shared maps so the route map, tube map, and line
+            // boards all use the same display names.
+            const baseNamesByKey = new Map();
+            allStations.forEach((st, key) => {
+              baseNamesByKey.set(key, String(st.id || "").replace(/^st_/, "").replace(/^INT_/, "Interchange ").replace(/_/g, "-") || "Station");
+            });
+            const routeContext = {
+              data,
+              allStations,
+              baseNamesByKey,
+              markersByKey,
+              transfers,
+              walkingLayers: [],
+            };
+            window._stationRenderContext = routeContext;
+            refreshStationPresentation(routeContext);
+
             (async () => {
               // Classes/types Nominatim considers "notable" landmarks
               const LANDMARK_CLASSES = new Set(['tourism', 'historic', 'leisure', 'government', 'man_made', 'military']);
@@ -1034,14 +1511,6 @@
                 'library', 'university', 'hospital', 'stadium', 'theatre', 'cinema',
                 'place_of_worship', 'arts_centre', 'college', 'courthouse', 'townhall'
               ]);
-
-              function haversineM(lat1, lon1, lat2, lon2) {
-                const R = 6371000, toRad = Math.PI / 180;
-                const dLat = (lat2 - lat1) * toRad, dLon = (lon2 - lon1) * toRad;
-                const a = Math.sin(dLat / 2) ** 2 +
-                  Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
-                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-              }
 
               async function fetchAreaName(lat, lon) {
                 try {
@@ -1059,7 +1528,7 @@
                   const isLandmark = LANDMARK_CLASSES.has(cls) ||
                     (cls === 'amenity' && LANDMARK_AMENITIES.has(typ));
                   if (isLandmark && d.name) {
-                    const dist = haversineM(lat, lon, parseFloat(d.lat), parseFloat(d.lon));
+                    const dist = haversineMeters(lat, lon, parseFloat(d.lat), parseFloat(d.lon));
                     if (dist <= 500) return d.name;
                   }
 
@@ -1073,22 +1542,9 @@
               }
 
               for (const [key, st] of allStations) {
-                const marker = created[key];
-                if (!marker) continue;
                 const name = await fetchAreaName(st.lat, st.lon);
-                if (name) {
-                  // Cache so the tube map renderer can pick it up
-                  window._stationNames[st.id] = name;
-                  marker.setTooltipContent(name);
-                  const isTransfer = transfers.has(key);
-                  marker.getPopup().setContent(
-                    `<strong>${name}</strong><br/>` +
-                    `ID: ${st.id}` +
-                    `${isTransfer ? '<br/>🔄 Interchange' : ''}<br/>` +
-                    `Value: ${Number(st.value || 0).toLocaleString()}<br/>` +
-                    `${Number(st.lon).toFixed(6)}, ${Number(st.lat).toFixed(6)}`
-                  );
-                }
+                if (name) baseNamesByKey.set(key, name);
+                refreshStationPresentation(routeContext);
                 await new Promise((r) => setTimeout(r, 1100));
               }
             })();
@@ -1106,6 +1562,7 @@
 
             suggestBtn.disabled = true;
             hideSuggestBtn.disabled = false;
+            const networkEstimate = networkBuildEstimate(data.lines);
             const lineSummary = data.lines
               .map((l) => {
                 const loopMarker = l.isLoop ? " ⭕" : "";
@@ -1113,11 +1570,16 @@
                 return `${l.id} (${l.type})${loopMarker}${tphText}`;
               })
               .join(", ");
-            messageEl.textContent = `Showing ${data.lines.length} metro lines: ${lineSummary}`;
+            messageEl.textContent =
+              `Showing ${data.lines.length} metro lines: ${lineSummary}. ` +
+              `Estimated build ${formatMoney(networkEstimate.total)} ` +
+              `(deep ${formatKm(networkEstimate.deep)}, subsurface ${formatKm(networkEstimate.subsurface)}, ` +
+              `surface/elevated ${formatKm(networkEstimate.surface)}).`;
 
             // Store line data for tube map generation
             window._lastLineData = data;
-            document.getElementById("tubeMapBtn").disabled = false;
+            tubeMapBtn.disabled = false;
+            lineBoardsBtn.disabled = false;
           })
           .catch((err) => {
             console.error("Suggestions fetch error", err);
@@ -1137,6 +1599,201 @@
         } catch (e) { }
       }, 50);
     });
+
+    function getLineColor(index, total) {
+      const hue = Math.round((index * 360) / Math.max(1, total));
+      return `hsl(${hue},70%,45%)`;
+    }
+
+    function buildFallbackStationContext(lineData) {
+      const allStations = new Map();
+      const baseNamesByKey = new Map();
+      const transfers = new Set();
+      lineData.lines.forEach((line, li) => {
+        line.stations.forEach((st) => {
+          const key = stationKey(st);
+          if (!allStations.has(key)) allStations.set(key, { ...st, lines: [] });
+          allStations.get(key).lines.push(li);
+          baseNamesByKey.set(
+            key,
+            window._stationNameByKey?.[key] ||
+            window._stationNames?.[st.id] ||
+            String(st.id || "").replace(/^st_/, "").replace(/^INT_/, "Interchange ").replace(/_/g, "-") ||
+            "Station"
+          );
+        });
+      });
+      allStations.forEach((st, key) => {
+        if (st.lines.length > 1) transfers.add(key);
+      });
+      const resolved = resolveStationNames(allStations, baseNamesByKey, lineData.lines);
+      return {
+        data: lineData,
+        allStations,
+        baseNamesByKey,
+        transfers,
+        stationNames: resolved.nameByKey,
+        walkingLinks: computeWalkingInterchanges(allStations, baseNamesByKey, resolved.nameByKey),
+      };
+    }
+
+    function getCurrentStationContext(lineData) {
+      const ctx = window._stationRenderContext;
+      if (ctx && ctx.data === lineData) {
+        const refreshed = refreshStationPresentation(ctx);
+        return {
+          data: lineData,
+          allStations: ctx.allStations,
+          baseNamesByKey: ctx.baseNamesByKey,
+          transfers: ctx.transfers,
+          stationNames: refreshed.stationNames,
+          walkingLinks: refreshed.walkingLinks,
+        };
+      }
+      return buildFallbackStationContext(lineData);
+    }
+
+    function lineBoardRouteName(line, index) {
+      const routeNames = [
+        "Northern Line",
+        "Central Line",
+        "Victoria Line",
+        "Piccadilly Line",
+        "Bakerloo Line",
+        "Jubilee Line",
+        "Metropolitan Line",
+        "District Line",
+        "Circle Line",
+        "Hammersmith & City Line",
+        "Waterloo & City Line",
+        "Elizabeth Line",
+      ];
+      if (index < routeNames.length) return routeNames[index];
+
+      const fallbackNames = [
+        "Abbey Line",
+        "Regent Line",
+        "Westway Line",
+        "Riverside Line",
+        "Market Line",
+        "Harbour Line",
+        "Parkway Line",
+        "Civic Line",
+      ];
+      return fallbackNames[(index - routeNames.length) % fallbackNames.length];
+    }
+
+    function generateLineBoards(lineData) {
+      if (!lineData || !lineData.lines || lineData.lines.length === 0) {
+        messageEl.textContent = "No line data available for line boards";
+        return;
+      }
+
+      const ctx = getCurrentStationContext(lineData);
+      const lineColors = {};
+      lineData.lines.forEach((line, idx) => {
+        lineColors[line.id] = getLineColor(idx, lineData.lines.length);
+      });
+
+      let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Metro Network — Line Boards</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg:#f6f8fb; --surface:#fff; --text:#0f172a; --muted:#64748b; --border:#dbe3ee; --font:'Inter',system-ui,sans-serif; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:24px; font-family:var(--font); background:var(--bg); color:var(--text); }
+    header { display:flex; align-items:baseline; gap:14px; margin-bottom:18px; }
+    h1 { margin:0; font-size:21px; letter-spacing:0; }
+    header p { margin:0; color:var(--muted); font-size:12px; }
+    .boards { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; align-items:start; }
+    .board { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 3px 16px rgba(15,23,42,.08); }
+    .board-head { color:#fff; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .line-id { font-size:18px; font-weight:800; line-height:1.12; }
+    .route-code { margin-top:3px; font-size:10.5px; font-weight:700; opacity:.78; }
+    .meta { font-size:11px; font-weight:700; opacity:.92; text-align:right; line-height:1.35; }
+    .cost-summary { padding:10px 14px; border-bottom:1px solid var(--border); background:#f8fafc; color:#334155; font-size:11px; line-height:1.45; }
+    .cost-summary strong { color:#0f172a; }
+    .stops { position:relative; padding:14px 14px 16px; }
+    .stop { position:relative; display:grid; grid-template-columns:32px minmax(0,1fr); gap:10px; min-height:43px; }
+    .connector { position:absolute; left:13.5px; top:16px; bottom:-16px; width:5px; border-radius:3px; background:currentColor; z-index:0; }
+    .dot { width:15px; height:15px; border:3px solid currentColor; background:#fff; border-radius:50%; margin:2px auto 0; z-index:1; }
+    .dot.transfer { width:19px; height:19px; border-width:4px; margin-top:0; }
+    .stop-lines { margin:0 0 4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+    .line-chip { border-radius:4px; padding:1px 5px; background:currentColor; color:#fff; font-size:9.5px; font-weight:800; line-height:1.35; }
+    .line-chip.transfer-line { background:#f8fafc; color:#334155; border:1px solid var(--border); }
+    .name { font-size:13px; font-weight:700; line-height:1.25; overflow-wrap:anywhere; }
+    .details { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; color:var(--muted); font-size:10.5px; line-height:1.35; }
+    .pill { border:1px solid var(--border); border-radius:999px; padding:1px 6px; background:#f8fafc; color:#334155; font-weight:700; }
+    .walk { color:#475569; }
+    @media (max-width: 640px) { body { padding:14px; } header { display:block; } header p { margin-top:5px; } .boards { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Metro Network — Line Boards</h1>
+    <p>Ordered route boards with transfers and walking interchanges</p>
+  </header>
+  <main class="boards">`;
+
+      lineData.lines.forEach((line, li) => {
+        const color = lineColors[line.id] || "#334155";
+        const tph = line.trains_per_hour || 0;
+        const routeName = lineBoardRouteName(line, li);
+        const estimate = line.build_estimate;
+        html += `<section class="board">`;
+        html += `<div class="board-head" style="background:${color};"><div><div class="line-id">${escapeHtml(routeName)}</div><div class="route-code">${escapeHtml(line.id)}</div></div><div class="meta">${escapeHtml(formatLineType(line.type))}${line.isLoop ? "<br>Loop" : ""}${tph ? `<br>${tph} tph` : ""}</div></div>`;
+        if (estimate) {
+          html += `<div class="cost-summary"><strong>${escapeHtml(formatMoney(estimate.total_cost))}</strong> estimated build`;
+          html += `<br>Deep ${escapeHtml(formatKm(estimate.deep_bore_m))} · subsurface ${escapeHtml(formatKm(estimate.subsurface_m))} · surface/elevated ${escapeHtml(formatKm(estimate.surface_or_elevated_m))}`;
+          html += `<br>${escapeHtml(estimate.recommendation || "")}</div>`;
+        }
+        html += `<div class="stops">`;
+        line.stations.forEach((st, stationIndex) => {
+          const key = stationKey(st);
+          const station = ctx.allStations.get(key) || st;
+          const name = ctx.stationNames.get(key) || window._stationNameByKey?.[key] || window._stationNames?.[st.id] || st.id;
+          const lineIndexes = station.lines || [li];
+          const transferLines = lineIndexes
+            .map((idx) => ({ line: lineData.lines[idx], index: idx }))
+            .filter((item) => item.line && item.line.id !== line.id);
+          const walks = walkingNotesForKey(key, ctx.walkingLinks);
+          const isTransfer = transferLines.length > 0;
+          html += `<div class="stop" style="color:${color};">`;
+          if (stationIndex < line.stations.length - 1) {
+            html += `<span class="connector" aria-hidden="true"></span>`;
+          }
+          html += `<span class="dot${isTransfer ? " transfer" : ""}"></span>`;
+          html += `<div><div class="stop-lines"><span class="line-chip">${escapeHtml(routeName)}</span>`;
+          transferLines.forEach((item) => {
+            html += `<span class="line-chip transfer-line">${escapeHtml(lineBoardRouteName(item.line, item.index))}</span>`;
+          });
+          html += `</div><div class="name">${escapeHtml(name)}</div>`;
+          if (isTransfer || walks.length) {
+            html += `<div class="details">`;
+            transferLines.forEach((item) => {
+              html += `<span class="pill">Transfer ${escapeHtml(lineBoardRouteName(item.line, item.index))}</span>`;
+            });
+            walks.forEach((note) => {
+              html += `<span class="walk">${escapeHtml(note)}</span>`;
+            });
+            html += `</div>`;
+          }
+          html += `</div></div>`;
+        });
+        html += `</div></section>`;
+      });
+
+      html += `</main></body></html>`;
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    }
 
     // Generate London Underground-style schematic tube map
     function generateTubeMap(lineData) {
@@ -1163,7 +1820,7 @@
       lines.forEach((line) => {
         const lineStations = [];
         line.stations.forEach((st) => {
-          const key = `${st.lon.toFixed(4)},${st.lat.toFixed(4)}`;
+          const key = stationKey(st);
           if (!allStations.has(key)) {
             allStations.set(key, {
               id: st.id,
@@ -1205,12 +1862,21 @@
         stationPositions.set(key, { x, y, station: st });
       });
 
+      const schematicStationNames = new Map();
+      allStations.forEach((st, key) => {
+        const resolvedName = window._stationNameByKey?.[key] || window._stationNames?.[st.id] || st.id.replace("st_", "");
+        schematicStationNames.set(key, resolvedName);
+      });
+
       // Generate SVG
       let svg = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Metro Network — Schematic Map</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #ffffff;
@@ -1220,7 +1886,7 @@
       --border: #e2e8f0;
       --accent: #1d4ed8;
       --r: 6px;
-      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font: 'Inter', system-ui, -apple-system, sans-serif;
     }
     *, *::before, *::after { box-sizing: border-box; }
     body {
@@ -1256,7 +1922,7 @@
       overflow: hidden;
       display: inline-block;
     }
-    svg { display: block; }
+    svg { display: block; font-family: var(--font); }
     .line {
       stroke-width: 4;
       fill: none;
@@ -1331,19 +1997,28 @@
         const lineId = lineMap.line.id;
         const label = `${lineMap.line.id} (${lineMap.line.type})`;
 
-        // Draw path connecting stations in order
-        let pathD = "";
-        for (let i = 0; i < lineMap.stationKeys.length; i++) {
-          const key = lineMap.stationKeys[i];
-          const pos = stationPositions.get(key);
-          if (pos) {
-            if (i === 0) {
-              pathD += `M${pos.x},${pos.y}`;
-            } else {
-              pathD += `L${pos.x},${pos.y}`;
-            }
-          }
+        // Draw path connecting stations in order. Terminal points are trimmed
+        // inward so the rounded stroke cap does not poke out past the end dot.
+        const pathPoints = lineMap.stationKeys
+          .map((key) => stationPositions.get(key))
+          .filter(Boolean)
+          .map((pos) => ({ x: pos.x, y: pos.y, pos }));
+
+        if (!lineMap.line.isLoop && pathPoints.length >= 2) {
+          const first = pathPoints[0];
+          const second = pathPoints[1];
+          const last = pathPoints[pathPoints.length - 1];
+          const beforeLast = pathPoints[pathPoints.length - 2];
+          const firstTrim = trimPointToward(first, second, schematicStationRadius(first.pos) + 3);
+          const lastTrim = trimPointToward(last, beforeLast, schematicStationRadius(last.pos) + 3);
+          pathPoints[0] = { ...first, x: firstTrim.x, y: firstTrim.y };
+          pathPoints[pathPoints.length - 1] = { ...last, x: lastTrim.x, y: lastTrim.y };
         }
+
+        let pathD = "";
+        pathPoints.forEach((point, i) => {
+          pathD += `${i === 0 ? "M" : "L"}${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+        });
 
         svg += `<path class="line" d="${pathD}" stroke="${color}" opacity="0.8" />`;
 
@@ -1351,11 +2026,13 @@
         const tphMidKey = lineMap.stationKeys[Math.floor(lineMap.stationKeys.length / 2)];
         const tphMidPos = stationPositions.get(tphMidKey);
         if (tphMidPos && lineMap.line.trains_per_hour > 0) {
-          const tphVal = lineMap.line.trains_per_hour;
-          const bx = tphMidPos.x;
-          const by = tphMidPos.y + 14;
-          svg += `<rect x="${bx - 24}" y="${by - 10}" width="48" height="16" rx="5" fill="${color}" opacity="0.88"/>`;
-          svg += `<text x="${bx}" y="${by + 3}" font-size="9" font-weight="bold" fill="white" text-anchor="middle">${tphVal} tph</text>`;
+        const tphVal = lineMap.line.trains_per_hour;
+        const bx = tphMidPos.x;
+        const by = tphMidPos.y + 14;
+          const badgeText = `${tphVal} tph`;
+          const badgeWidth = Math.max(64, badgeText.length * 7 + 18);
+          svg += `<rect x="${bx - badgeWidth / 2}" y="${by - 10}" width="${badgeWidth}" height="16" rx="5" fill="${color}" opacity="0.88"/>`;
+          svg += `<text x="${bx}" y="${by + 3}" font-family="Inter, system-ui, sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">${badgeText}</text>`;
         }
       });
 
@@ -1414,9 +2091,24 @@
         ];
       }
 
+      function schematicStationRadius(pos) {
+        return pos.station.lines.length > 1 ? 6 : 4;
+      }
+
+      function trimPointToward(point, toward, distance) {
+        const dx = toward.x - point.x;
+        const dy = toward.y - point.y;
+        const len = Math.hypot(dx, dy);
+        if (!isFinite(len) || len <= 0.001) return { x: point.x, y: point.y };
+        const trim = Math.min(distance, len / 2);
+        return {
+          x: point.x + (dx / len) * trim,
+          y: point.y + (dy / len) * trim,
+        };
+      }
+
       stationList.forEach(([key, pos]) => {
-        const resolvedName = window._stationNames?.[pos.station.id];
-        const label = resolvedName || pos.station.id.replace("st_", "");
+        const label = schematicStationNames.get(key) || pos.station.id.replace("st_", "");
         const isTransfer = pos.station.lines.length > 1;
         const fontSize = isTransfer ? 10 : 9;
         const fontWeight = isTransfer ? 700 : 600;
@@ -1443,7 +2135,7 @@
 
         const lx = pos.x + bestAnchor[0];
         const ly = pos.y + bestAnchor[1];
-        svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="middle">${label}</text>`;
+        svg += `<text class="station-label" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${fill}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="middle">${escapeHtml(label)}</text>`;
       });
 
       // Add SVG in-map legend (per-line, top-left)
@@ -1455,7 +2147,7 @@
         const tphStr = tph > 0 ? ` — ${tph} tph` : "";
         const labelTxt = `${lm.line.id} (${lm.line.type})${tphStr}`;
         svg += `<line x1="14" y1="${legendY}" x2="36" y2="${legendY}" stroke="${color}" stroke-width="3" />`;
-        svg += `<text x="42" y="${legendY + 4}" font-family="'Segoe UI',system-ui,sans-serif" font-size="10" fill="#0f172a">${labelTxt}</text>`;
+        svg += `<text x="42" y="${legendY + 4}" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#0f172a">${labelTxt}</text>`;
         legendY += 18;
       });
       svg += `</g>`;
