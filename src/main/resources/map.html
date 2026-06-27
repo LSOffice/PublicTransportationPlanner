@@ -1697,34 +1697,45 @@
       return buildFallbackStationContext(lineData);
     }
 
-    function lineBoardRouteName(line, index) {
-      const routeNames = [
-        "Northern Line",
-        "Central Line",
-        "Victoria Line",
-        "Piccadilly Line",
-        "Bakerloo Line",
-        "Jubilee Line",
-        "Metropolitan Line",
-        "District Line",
-        "Circle Line",
-        "Hammersmith & City Line",
-        "Waterloo & City Line",
-        "Elizabeth Line",
-      ];
-      if (index < routeNames.length) return routeNames[index];
+    function routeNamePart(name) {
+      return String(name || "Metro")
+        .replace(/\s+(north|south|east|west|central)$/i, "")
+        .replace(/\s+(estate|market|station)$/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
 
-      const fallbackNames = [
-        "Abbey Line",
-        "Regent Line",
-        "Westway Line",
-        "Riverside Line",
-        "Market Line",
-        "Harbour Line",
-        "Parkway Line",
-        "Civic Line",
+    function distinctiveLineLandmark(stationNames) {
+      const landmarkTerms = [
+        "Leadenhall", "Borough Market", "Chinatown", "King's Cross", "West Smithfield",
+        "Paddington", "Marylebone", "South Kensington", "Bethnal Green", "Elephant and Castle",
+        "Victoria", "Hammersmith", "Notting Hill", "Covent Garden", "Gray's Inn",
       ];
-      return fallbackNames[(index - routeNames.length) % fallbackNames.length];
+      return stationNames.find((name) =>
+        landmarkTerms.some((term) => String(name).toLowerCase().includes(term.toLowerCase()))
+      );
+    }
+
+    function lineBoardRouteName(line, index, stationNames) {
+      const cleanedNames = (stationNames || []).map(routeNamePart).filter(Boolean);
+      const landmark = distinctiveLineLandmark(cleanedNames);
+      if (landmark) return `${routeNamePart(landmark)} Line`;
+
+      const first = routeNamePart(cleanedNames[0]);
+      const last = routeNamePart(cleanedNames[cleanedNames.length - 1]);
+      if (first && last && first.toLowerCase() !== last.toLowerCase()) {
+        return `${first}-${last} Line`;
+      }
+
+      const middle = routeNamePart(cleanedNames[Math.floor(cleanedNames.length / 2)]);
+      if (middle) return `${middle} Line`;
+      return `${line?.id || `Route ${index + 1}`} Line`;
+    }
+
+    function lineBoardShortName(routeName) {
+      return String(routeName || "")
+        .replace(/\s+Line$/i, "")
+        .replace(/\s*-\s*/g, "-");
     }
 
     function generateLineBoards(lineData) {
@@ -1769,7 +1780,7 @@
     .dot { width:15px; height:15px; border:3px solid currentColor; background:#fff; border-radius:50%; margin:2px auto 0; z-index:1; }
     .dot.transfer { width:19px; height:19px; border-width:4px; margin-top:0; }
     .stop-lines { margin:0 0 4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
-    .line-chip { border-radius:4px; padding:1px 5px; background:currentColor; color:#fff; font-size:9.5px; font-weight:800; line-height:1.35; }
+    .line-chip { border-radius:4px; padding:1px 5px; background:currentColor; color:#fff; font-size:9px; font-weight:800; line-height:1.35; }
     .line-chip.transfer-line { background:#f8fafc; color:#334155; border:1px solid var(--border); }
     .name { font-size:13px; font-weight:700; line-height:1.25; overflow-wrap:anywhere; }
     .details { margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; color:var(--muted); font-size:10.5px; line-height:1.35; }
@@ -1785,10 +1796,19 @@
   </header>
   <main class="boards">`;
 
+      const routeNamesById = new Map();
+      lineData.lines.forEach((line, li) => {
+        const names = line.stations.map((st) => {
+          const key = stationKey(st);
+          return ctx.stationNames.get(key) || window._stationNameByKey?.[key] || window._stationNames?.[st.id] || st.id;
+        });
+        routeNamesById.set(line.id, lineBoardRouteName(line, li, names));
+      });
+
       lineData.lines.forEach((line, li) => {
         const color = lineColors[line.id] || "#334155";
         const tph = line.trains_per_hour || 0;
-        const routeName = lineBoardRouteName(line, li);
+        const routeName = routeNamesById.get(line.id) || lineBoardRouteName(line, li, []);
         const estimate = line.build_estimate;
         html += `<section class="board">`;
         html += `<div class="board-head" style="background:${color};"><div><div class="line-id">${escapeHtml(routeName)}</div><div class="route-code">${escapeHtml(line.id)}</div></div><div class="meta">${escapeHtml(formatLineType(line.type))}${line.isLoop ? "<br>Loop" : ""}${tph ? `<br>${tph} tph` : ""}</div></div>`;
@@ -1813,15 +1833,17 @@
             html += `<span class="connector" aria-hidden="true"></span>`;
           }
           html += `<span class="dot${isTransfer ? " transfer" : ""}"></span>`;
-          html += `<div><div class="stop-lines"><span class="line-chip">${escapeHtml(routeName)}</span>`;
+          html += `<div><div class="stop-lines"><span class="line-chip">${escapeHtml(lineBoardShortName(routeName))}</span>`;
           transferLines.forEach((item) => {
-            html += `<span class="line-chip transfer-line">${escapeHtml(lineBoardRouteName(item.line, item.index))}</span>`;
+            const transferName = routeNamesById.get(item.line.id) || lineBoardRouteName(item.line, item.index, []);
+            html += `<span class="line-chip transfer-line">${escapeHtml(lineBoardShortName(transferName))}</span>`;
           });
           html += `</div><div class="name">${escapeHtml(name)}</div>`;
           if (isTransfer || walks.length) {
             html += `<div class="details">`;
             transferLines.forEach((item) => {
-              html += `<span class="pill">Transfer ${escapeHtml(lineBoardRouteName(item.line, item.index))}</span>`;
+              const transferName = routeNamesById.get(item.line.id) || lineBoardRouteName(item.line, item.index, []);
+              html += `<span class="pill">Transfer ${escapeHtml(transferName)}</span>`;
             });
             walks.forEach((note) => {
               html += `<span class="walk">${escapeHtml(note)}</span>`;
