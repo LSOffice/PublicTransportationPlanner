@@ -2281,9 +2281,11 @@ class MetroBuilder(
                     val midLat = (from.lat + to.lat) / 2.0
                     val distToCenter = haversineMeters(midLon, midLat, centerLon, centerLat)
                     val avgValue = (from.catchmentPopulation + to.catchmentPopulation) / 2.0
+                    val centralDeepRadiusMeters =
+                        max(coreRadiusMeters * 1.15, min(ringRadiusMeters * 1.15, 10_000.0))
                     val technology =
                         when {
-                            distToCenter <= coreRadiusMeters * 0.9 -> AlignmentTechnology.DEEP_BORE_TUNNEL
+                            distToCenter <= centralDeepRadiusMeters -> AlignmentTechnology.DEEP_BORE_TUNNEL
                             line.type == LineType.CORE_DISTRIBUTOR && distToCenter <= coreRadiusMeters * 1.15 ->
                                 AlignmentTechnology.DEEP_BORE_TUNNEL
                             avgValue >= highValueThreshold && distToCenter <= ringRadiusMeters ->

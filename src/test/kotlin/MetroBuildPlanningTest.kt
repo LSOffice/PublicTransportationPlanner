@@ -107,8 +107,8 @@ class MetroBuildPlanningTest {
                 Line(
                     "RT1",
                     listOf(
-                        Station("r1", centerLon + 0.060, centerLat, 100.0),
-                        Station("r2", centerLon + 0.070, centerLat, 100.0),
+                        Station("r1", centerLon + 0.160, centerLat, 100.0),
+                        Station("r2", centerLon + 0.170, centerLat, 100.0),
                     ),
                     1.0,
                     0.0,
@@ -117,8 +117,8 @@ class MetroBuildPlanningTest {
                 Line(
                     "RT2",
                     listOf(
-                        Station("o1", centerLon + 0.200, centerLat, 100.0),
-                        Station("o2", centerLon + 0.210, centerLat, 100.0),
+                        Station("o1", centerLon + 0.300, centerLat, 100.0),
+                        Station("o2", centerLon + 0.310, centerLat, 100.0),
                     ),
                     1.0,
                     0.0,
@@ -132,7 +132,7 @@ class MetroBuildPlanningTest {
                 centerLon = centerLon,
                 centerLat = centerLat,
                 coreRadiusMeters = 3000.0,
-                ringRadiusMeters = 9000.0,
+                ringRadiusMeters = 12_000.0,
             )
 
         assertEquals(AlignmentTechnology.DEEP_BORE_TUNNEL, estimates[0].buildEstimate?.segments?.single()?.technology)

@@ -416,6 +416,24 @@
     .station-label.leaflet-tooltip-right::before {
       display: none !important;
     }
+
+    .subsurface-dash-marker {
+      width: 20px !important;
+      height: 10px !important;
+      background: transparent !important;
+      border: 0 !important;
+      pointer-events: auto;
+    }
+
+    .subsurface-dash-marker span {
+      display: block;
+      width: 18px;
+      height: 4px;
+      margin: 3px 1px;
+      border-radius: 2px;
+      background: #0f172a;
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86);
+    }
   </style>
 </head>
 
@@ -1064,10 +1082,33 @@
       }[technology] || "Unknown";
     }
 
-    function technologyStyle(technology) {
-      if (technology === "DEEP_BORE_TUNNEL") return { color: "#111827", weight: 8, opacity: 0.45 };
-      if (technology === "SUBSURFACE_TUNNEL") return { color: "#d97706", weight: 8, opacity: 0.45, dashArray: "10, 7" };
-      return { color: "#16a34a", weight: 8, opacity: 0.45, dashArray: "3, 7" };
+    function technologyOverlayStyle(technology) {
+      if (technology !== "SURFACE_OR_ELEVATED") return null;
+      return { color: "#16a34a", weight: 8, opacity: 0.38, dashArray: "3, 7" };
+    }
+
+    function addSubsurfaceDashMarkers(from, to, lineId, segment) {
+      const length = Number(segment.length_m || 0);
+      const count = Math.max(2, Math.min(18, Math.floor(length / 350)));
+      for (let i = 1; i <= count; i++) {
+        const t = i / (count + 1);
+        const lat = from.lat + (to.lat - from.lat) * t;
+        const lon = from.lon + (to.lon - from.lon) * t;
+        const marker = L.marker([lat, lon], {
+          icon: L.divIcon({
+            className: "subsurface-dash-marker",
+            iconSize: [20, 10],
+            iconAnchor: [10, 5],
+            html: "<span></span>",
+          }),
+          interactive: true,
+          keyboard: false,
+        }).addTo(suggestionsLayer);
+        marker.bindTooltip(
+          `${lineId}: ${technologyLabel(segment.technology)} · ${formatKm(segment.length_m)} · ${formatMoney(segment.civil_cost)}`,
+          { sticky: true }
+        );
+      }
     }
 
     function buildEstimateSummary(estimate) {
@@ -1403,10 +1444,13 @@
                 const from = line.stations[segmentIndex];
                 const to = line.stations[segmentIndex + 1];
                 if (!from || !to) return;
-                const tech = L.polyline(
-                  [[from.lat, from.lon], [to.lat, to.lon]],
-                  technologyStyle(segment.technology)
-                ).addTo(suggestionsLayer);
+                if (segment.technology === "SUBSURFACE_TUNNEL") {
+                  addSubsurfaceDashMarkers(from, to, line.id, segment);
+                  return;
+                }
+                const overlayStyle = technologyOverlayStyle(segment.technology);
+                if (!overlayStyle) return;
+                const tech = L.polyline([[from.lat, from.lon], [to.lat, to.lon]], overlayStyle).addTo(suggestionsLayer);
                 tech.bindTooltip(
                   `${line.id}: ${technologyLabel(segment.technology)} · ${formatKm(segment.length_m)} · ${formatMoney(segment.civil_cost)}`,
                   { sticky: true }
