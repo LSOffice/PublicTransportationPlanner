@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-03T22:51:39Z",
+  "title": "Design System: London Network Planner",
+  "extensions": {
+    "colorMeta": {
+      "action-blue": { "role": "primary", "displayName": "Safety Action Blue", "canonical": "#0b66d4", "tonalRamp": ["#052347", "#063667", "#084d9f", "#0b66d4", "#4389de", "#7daee9", "#bad5f4", "#edf5fd"] },
+      "action-blue-deep": { "role": "primary", "displayName": "Deep Action Blue", "canonical": "#084d9f", "tonalRamp": ["#031a38", "#052952", "#073c7a", "#084d9f", "#3d73b5", "#789bcf", "#b6c9e5", "#edf2f9"] },
+      "action-blue-soft": { "role": "primary", "displayName": "Pale Selection Blue", "canonical": "#e8f1fc", "tonalRamp": ["#172637", "#29435e", "#456b94", "#6c96c4", "#9bbde1", "#c2d8ef", "#e0ecf8", "#f4f8fd"] },
+      "planning-ink": { "role": "neutral", "displayName": "Planning Ink", "canonical": "#17202b", "tonalRamp": ["#11171f", "#202c39", "#354655", "#526574", "#788895", "#a2adb6", "#ccd2d7", "#f0f2f3"] },
+      "secondary-ink": { "role": "neutral", "displayName": "Secondary Ink", "canonical": "#52606d", "tonalRamp": ["#172029", "#2a3742", "#40505d", "#5a6a77", "#7e8c97", "#a7b0b8", "#ced4d8", "#f1f3f4"] },
+      "muted-ink": { "role": "neutral", "displayName": "Muted Ink", "canonical": "#5e6a75", "tonalRamp": ["#1a2229", "#303b44", "#485761", "#65747e", "#87949d", "#adb5bb", "#d2d6d9", "#f3f4f5"] },
+      "paper": { "role": "neutral", "displayName": "Paper", "canonical": "#ffffff", "tonalRamp": ["#262626", "#454545", "#666666", "#898989", "#adadad", "#cecece", "#e8e8e8", "#ffffff"] },
+      "work-surface": { "role": "neutral", "displayName": "Cool Work Surface", "canonical": "#f4f6f7", "tonalRamp": ["#232728", "#404647", "#62696b", "#858d8f", "#aab0b2", "#cbd0d2", "#e3e6e7", "#f4f6f7"] },
+      "rule": { "role": "neutral", "displayName": "Rule Grey", "canonical": "#d6dde1", "tonalRamp": ["#202628", "#394347", "#59666c", "#7b8a91", "#a0abb0", "#bec7cb", "#d6dde1", "#f3f5f6"] },
+      "evidence-amber": { "role": "secondary", "displayName": "Evidence Amber", "canonical": "#b86608", "tonalRamp": ["#351c02", "#593004", "#824706", "#a95c07", "#cf7a1e", "#e7a55e", "#f4d09e", "#fdf3df"] },
+      "unsupported-red": { "role": "secondary", "displayName": "Unsupported Red", "canonical": "#b42332", "tonalRamp": ["#3b090e", "#641018", "#8c1724", "#b42332", "#cf5360", "#e38a94", "#f0bec3", "#fbeaec"] },
+      "coverage-green": { "role": "secondary", "displayName": "Coverage Green", "canonical": "#14836f", "tonalRamp": ["#052b25", "#08483e", "#0d6758", "#14836f", "#42a28f", "#7fc2b5", "#b8ddd5", "#e5f5f1"] }
+    },
+    "typographyMeta": {
+      "metric": { "displayName": "Metric", "purpose": "Network score and journey totals only." },
+      "title": { "displayName": "Title", "purpose": "Dialog and high-level task titles." },
+      "body": { "displayName": "Body", "purpose": "Planning instructions and model explanations." },
+      "label": { "displayName": "Label", "purpose": "Fields, metadata, tables, and compact states." }
+    },
+    "shadows": [
+      { "name": "floating-control", "value": "0 2px 8px rgba(23, 32, 43, 0.12)", "purpose": "Map tools, notices, and keys." },
+      { "name": "workspace-overlay", "value": "0 5px 18px rgba(23, 32, 43, 0.12)", "purpose": "Analysis drawer and narrow-screen gate." },
+      { "name": "protected-focus", "value": "0 18px 60px rgba(23, 32, 43, 0.25)", "purpose": "Method dialog only." }
+    ],
+    "motion": [
+      { "name": "state-standard", "value": "180ms ease", "purpose": "Colour, border, and shadow state transitions." },
+      { "name": "spinner", "value": "700ms linear infinite", "purpose": "Active network generation only." }
+    ],
+    "breakpoints": [
+      { "name": "compact-desktop", "value": "1280px" },
+      { "name": "desktop-required", "value": "1100px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The current workflow action.",
+      "html": "<button class=\"ds-btn-primary\">Generate network</button>",
+      "css": ".ds-btn-primary{height:34px;padding:0 12px;color:#fff;background:var(--accent,#0b66d4);border:1px solid var(--accent,#0b66d4);border-radius:5px;font:700 13px Aptos,Segoe UI,sans-serif;transition:background-color 180ms ease,border-color 180ms ease}.ds-btn-primary:hover{background:#084d9f;border-color:#084d9f}.ds-btn-primary:focus-visible{outline:2px solid #006fe6;outline-offset:2px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A bounded supporting action.",
+      "html": "<button class=\"ds-btn-secondary\">Draw study area</button>",
+      "css": ".ds-btn-secondary{height:34px;padding:0 12px;color:#17202b;background:#fff;border:1px solid #aeb9c0;border-radius:5px;font:700 13px Aptos,Segoe UI,sans-serif;transition:background-color 180ms ease,border-color 180ms ease}.ds-btn-secondary:hover{background:#f4f6f7;border-color:#7f8d97}.ds-btn-secondary:focus-visible{outline:2px solid #006fe6;outline-offset:2px}"
+    },
+    {
+      "name": "Planning Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Compact numeric or project input.",
+      "html": "<input class=\"ds-field\" value=\"500000\" aria-label=\"Daily journeys\">",
+      "css": ".ds-field{width:180px;height:34px;padding:0 9px;color:#17202b;background:#fff;border:1px solid #aeb9c0;border-radius:5px;font:13px Aptos,Segoe UI,sans-serif;font-variant-numeric:tabular-nums}.ds-field:hover{border-color:#7f8d97}.ds-field:focus-visible{outline:2px solid #006fe6;outline-offset:2px}"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "status-chip",
+      "description": "A textual planning state with semantic colour.",
+      "html": "<span class=\"ds-status-chip\">Not analysed</span>",
+      "css": ".ds-status-chip{display:inline-flex;align-items:center;min-height:22px;padding:0 7px;color:#52606d;background:#f4f6f7;border:1px solid #d6dde1;border-radius:999px;font:750 11px Aptos,Segoe UI,sans-serif}.ds-status-chip:focus-visible{outline:2px solid #006fe6;outline-offset:2px}"
+    },
+    {
+      "name": "Mode Navigation",
+      "kind": "nav",
+      "description": "Two-state Design and Operate switch.",
+      "html": "<nav class=\"ds-mode\"><button class=\"ds-mode-active\">Design</button><button>Operate</button></nav>",
+      "css": ".ds-mode{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;background:#e9edef;border:1px solid #d6dde1;border-radius:8px}.ds-mode button{height:34px;color:#52606d;background:transparent;border:0;border-radius:5px;font:650 13px Aptos,Segoe UI,sans-serif}.ds-mode button:hover{color:#17202b}.ds-mode .ds-mode-active{color:#084d9f;background:#fff;box-shadow:0 1px 4px rgba(23,32,43,.12)}.ds-mode button:focus-visible{outline:2px solid #006fe6;outline-offset:2px}"
+    },
+    {
+      "name": "Line Register Row",
+      "kind": "custom",
+      "description": "A line identity, role, and frequency in one compact selectable row.",
+      "html": "<button class=\"ds-line-row\"><span class=\"ds-line-swatch\"></span><span><strong>Central link</strong><small>Cross-city trunk · 18 tph</small></span></button>",
+      "css": ".ds-line-row{display:grid;grid-template-columns:8px 1fr;align-items:center;gap:8px;width:260px;padding:9px;text-align:left;color:#17202b;background:#fff;border:1px solid #d6dde1;border-radius:6px;font:13px Aptos,Segoe UI,sans-serif}.ds-line-row:hover{background:#f4f6f7;border-color:#aeb9c0}.ds-line-row:focus-visible{outline:2px solid #006fe6;outline-offset:2px}.ds-line-row span:last-child{display:grid}.ds-line-row small{color:#5e6a75;font-size:11px}.ds-line-swatch{width:8px;height:30px;background:#0b66d4;border-radius:2px}"
+    },
+    {
+      "name": "Map Tool",
+      "kind": "button",
+      "description": "A compact floating map action.",
+      "html": "<button class=\"ds-map-tool\" aria-label=\"Fit supported London\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5\"/></svg></button>",
+      "css": ".ds-map-tool{display:grid;place-items:center;width:36px;height:36px;padding:0;color:#17202b;background:#fff;border:1px solid #aeb9c0;border-radius:5px;box-shadow:0 2px 8px rgba(23,32,43,.12)}.ds-map-tool:hover{background:#f4f6f7}.ds-map-tool:focus-visible{outline:2px solid #006fe6;outline-offset:2px}.ds-map-tool svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Maintained Planning Desk",
+    "overview": "The interface behaves like a city planner's working GIS document: compact, calm, information-dense, and visibly maintained. Paper-white work surfaces frame a continuous geographic canvas, while rules, tabular figures, infrastructure line patterns, and one safety-blue action colour make the model inspectable without making it theatrical. Depth is shallow and operational. Strong colour is semantic: blue acts, green confirms evidence coverage, amber marks incomplete evidence, and red marks unsupported or failed states. The map remains the focal object at every desktop size.",
+    "keyCharacteristics": ["Dense three-pane desktop geography with a persistent analysis drawer", "Compact controls, crisp one-pixel rules, and tabular operational figures", "Pattern and text reinforce every colour-coded planning state", "Restrained motion reserved for state changes and live train movement"],
+    "rules": [
+      { "name": "The Semantic Colour Rule", "body": "Blue acts, green validates, amber qualifies, and red blocks; do not reuse those colours decoratively.", "section": "colors" },
+      { "name": "The Map Legibility Rule", "body": "Coverage overlays remain translucent, bounded, and paired with a pattern or line treatment so geography stays readable beneath them.", "section": "colors" },
+      { "name": "The Operational Type Rule", "body": "Use size for primary results, weight for control hierarchy, and tabular figures for values; avoid display typography that turns the workspace into a presentation page.", "section": "typography" },
+      { "name": "The Flat-By-Default Rule", "body": "Permanent work surfaces use either a rule or tonal contrast; shadows indicate a surface floating over the map.", "section": "elevation" }
+    ],
+    "dos": ["Do preserve the map as the dominant continuous work surface.", "Do pair colour with labels, patterns, line styles, or shapes.", "Do keep model assumptions and simulated-data labels beside their results.", "Do use tabular numerals for scores, times, frequencies, and demand."],
+    "donts": ["Don't turn metrics into a dashboard grid of detached cards.", "Don't use red, amber, green, or blue decoratively outside their semantic roles.", "Don't stack the full planning workspace on narrow screens; use the explicit desktop gate.", "Don't introduce ornamental illustration, gradients, or consumer-map styling into the maintained GIS world."]
+  }
+}

@@ -207,3 +207,15 @@ When you see unexpected behavior:
 6. **Repeat**
 
 Never blindly tweak. The logs tell you exactly where to look.
+
+## Planner workspace integration
+
+`MetroBuilder.buildNaturalNetworkFromGrid` still owns automatic corridor generation and its eight checkpoints. The planner API then converts the returned lines into the versioned editable model:
+
+1. Existing shared interchange IDs are preserved.
+2. Legacy types become `RADIAL`, `ORBITAL_BYPASS`, or `CORE_DISTRIBUTOR` planning roles.
+3. Segments above the generated network's 75th-percentile endpoint demand begin as underground; the rest begin overground.
+4. Every segment length is recomputed from its final station coordinates.
+5. Journey analysis, scores, and simulation use `PrimitiveRoutingEngine`, not the older `MetroBuilder` O(V²) journey helper.
+
+When generation changes, inspect both the checkpoint output and the resulting editable contract: stable station IDs, segment endpoints, infrastructure assumptions, line frequency, interchange identity, and `/api/v1/networks/generate` JSON fields.

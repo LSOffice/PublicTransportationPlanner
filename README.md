@@ -1,91 +1,82 @@
-# PublicTransportationPlanner
+# London Network Planner
 
-PublicTransportationPlanner is a Kotlin-based web application that analyses geospatial population data and generates public-transport network suggestions and visualisations. It reads CSV population/coordinate data, builds a metro-style transport model using a gravity demand model and corridor classification algorithm, and serves an interactive HTML map via a built-in HTTP server.
+London Network Planner is a local desktop planning workspace for designing and testing hypothetical metro networks around Greater London. It combines an editable Leaflet map with Kotlin generation, synthetic origin-destination demand, network scoring, frequency-aware journey planning, and deterministic disruption simulation.
 
-## Features
+The application is a planning model, not a live TfL service. OD journeys, capacity loads, scores, costs, and train movements are simulated and are labelled accordingly in the UI.
 
-- **Interactive map** – Serves `map.html` (Leaflet-based) on `http://localhost:5000` for exploring generated network proposals.
-- **Automatic network generation** – `MetroBuilder` clusters population grid cells, builds a demand graph, identifies corridor chains (radial trunks, core distributors, orbitals), and selects non-overlapping lines.
-- **PTAL enrichment** – `PtalLookup` provides Public Transport Accessibility Level data for Greater London (TfL PTAL 2015, ~4 835 LSOAs) to weight demand calculations.
-- **Population density lookup** – `/density` endpoint finds the nearest grid point in a CSV population dataset for any WGS84 coordinate.
-- **CORS proxy** – `/proxy` endpoint forwards external data requests (e.g. GitHub-hosted GeoJSON) to avoid browser CORS restrictions.
-- **Transport suggestions** – `/suggestions` endpoint returns proposed metro lines as GeoJSON for a given geographic polygon.
-- **Haversine distances** – All spatial calculations use accurate great-circle distances.
-- **Dijkstra journey metrics** – Average travel times across all station pairs are computed and logged.
+## What it does
 
-## Requirements
+- Draw a supported London study area and generate an editable metro proposal.
+- Draw manual radial, cross-city trunk, orbital bypass, and core distributor lines.
+- Mark each segment independently as underground or overground.
+- Save up to 20 local project revisions in IndexedDB and import/export versioned JSON projects.
+- Generate and inspect a downloadable synthetic point-to-point journeys/day dataset.
+- Score demand served, journey time, capacity, connectivity, construction efficiency, and resilience.
+- Compare Dijkstra and A* routes with boarding waits, transfer waits, dwell, and infrastructure speed.
+- Change line frequency and inspect headway effects.
+- Simulate trains and cancellations, track incidents, weather, signal failures, and station closures.
+- Detect coverage gaps, long waits, long segments, overcrowding, and other deterministic issues.
 
-- JDK 17 or newer (project targets JVM toolchain 23)
-- Gradle wrapper included – no separate Gradle installation needed
+## Architecture
 
-## Quickstart
+- Kotlin 2.2.20, JVM toolchain 23, Gradle 8.14 wrapper.
+- Ktor 2.3.12 on Netty, bound to `127.0.0.1` on the first free port in `5000..5010`.
+- kotlinx serialization for versioned API and project contracts.
+- Plain HTML/CSS/JavaScript with pinned Leaflet 1.9.4 and Leaflet Draw 1.0.4 CDN assets.
+- No database, accounts, cloud synchronization, frontend build system, or live transport feed.
+- Editable networks compile into primitive CSR-style arrays and a primitive binary min-heap for routing.
+
+The older `MetroBuilder` remains the automatic generation engine. Planner analysis uses the new project model and `PrimitiveRoutingEngine`; the legacy `/suggestions`, `/metro_suggestions`, and `/density` contracts remain available for compatibility.
+
+## Run
 
 ```bash
-# Build
 ./gradlew build
-
-# Run (starts HTTP server on port 5000–5010)
 ./gradlew run
 ```
 
-Then open **http://localhost:5000** in your browser to view the interactive map.
+Open the URL printed by the server. The full editor requires a viewport at least 1100 pixels wide.
 
-To run the packaged jar directly (after `./gradlew build`):
+## Typical workflow
 
-```bash
-java -jar build/libs/PublicTransportationPlanner-1.0-SNAPSHOT.jar
-```
+1. In **Design**, draw a study area within the supported green Greater London boundary.
+2. Generate a network or draw lines manually. Select lines, stations, and segments to edit them.
+3. Open **Demand** to inspect the explicitly simulated OD matrix and score.
+4. Switch to **Operate**, set trains per hour, and compare Dijkstra/A* journeys.
+5. Add disruption scenarios and play the train simulation. Weather targets list only overground segments.
+6. Use **Issues** to navigate directly to inefficient or overloaded network elements.
+7. Save locally or export the complete project as JSON.
 
-## API Endpoints
+## API
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `GET /` | GET | Serves the interactive `map.html` visualisation |
-| `GET /density?lon=&lat=&max_m=` | GET | Nearest-neighbour population density lookup |
-| `GET /proxy?url=&lat=&lon=` | GET | CORS proxy for external data sources |
-| `GET /suggestions` | GET/POST | Returns proposed metro lines as GeoJSON |
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/coverage` | Supported Greater London geometry and evidence metadata |
+| `POST` | `/api/v1/networks/generate` | Generate an editable network for a study polygon |
+| `POST` | `/api/v1/analysis/sessions` | Compile a project, synthetic demand, score, and issues |
+| `GET` | `/api/v1/analysis/sessions/{id}/demand` | Page through simulated OD rows |
+| `GET` | `/api/v1/analysis/sessions/{id}/demand.csv` | Download the simulated OD dataset |
+| `POST` | `/api/v1/analysis/sessions/{id}/journeys` | Route with Dijkstra or A* |
+| `POST` | `/api/v1/analysis/sessions/{id}/simulations` | Compile headway-derived train runs |
 
-## Project Layout
+Analysis sessions are bounded in-memory caches. Saved browser projects contain inputs and model versions, so sessions and derived demand can be reproduced after restart.
 
-```
-PublicTransportationPlanner/
-├── src/main/kotlin/
-│   ├── Main.kt           # HTTP server, endpoints, haversine helper
-│   ├── MetroBuilder.kt   # Network generation algorithm
-│   └── PtalLookup.kt     # TfL PTAL 2015 nearest-neighbour lookup
-├── src/main/resources/
-│   ├── map.html          # Leaflet-based interactive map
-│   ├── ptal_spatial.csv  # PTAL data (Greater London LSOAs)
-│   └── *.csv             # Population grid datasets
-├── scripts/
-│   └── sample.csv        # Example input CSV
-├── build.gradle.kts
-├── settings.gradle.kts
-├── DEBUG_GUIDE.md        # Tuning guide for the network algorithm
-└── README.md
-```
-
-## Configuration & Data
-
-- Population data CSVs should be placed in `src/main/resources/` (example: `gbr_pd_2020_1km_ASCII_XYZ.csv`).
-- PTAL enrichment is automatically enabled when `ptal_spatial.csv` is present on the classpath; otherwise it degrades gracefully.
-- A `GITHUB_TOKEN` environment variable can be set to authenticate proxied requests to the GitHub API.
-
-## Development
+## Verification
 
 ```bash
-# Build and test
-./gradlew build
-
-# Run tests only
 ./gradlew test
-
-# Run with debug output (MetroBuilder logs are on by default)
-./gradlew run
+./gradlew build
 ```
 
-See [DEBUG_GUIDE.md](DEBUG_GUIDE.md) for a detailed walkthrough of the network algorithm's diagnostic output and how to tune its parameters.
+Tests cover primitive routing, Dijkstra/A* parity, expected waits, track incidents, infrastructure-specific weather behaviour, exact synthetic journey totals, score weights, and coverage geometry.
 
-## License
+See `PLANNER_MODEL.md` for formulas and limitations, `DATA_SOURCES.md` for provenance and attribution, and `DEBUG_GUIDE.md` before changing automatic-generation thresholds.
 
-This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+## Important limitations
+
+- Population-grid values are demand-density proxies, not asserted exact population counts.
+- PTAL is 2015 evidence and applies only inside the bundled London coverage.
+- The fixed score is a comparison aid, not a business case or engineering feasibility assessment.
+- Speeds, capacities, cost multipliers, and surface-reference time are visible model assumptions.
+- Track alignments do not account for geology, rights of way, utilities, planning consent, or construction access.
+- No project licence is currently declared. Check source-data and code licensing before redistribution.

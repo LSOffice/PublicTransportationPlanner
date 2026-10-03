@@ -1,15 +1,41 @@
 package org.lsoffice
 
-import com.sun.net.httpserver.HttpServer
-import java.io.BufferedReader
-import java.io.IOException
-import java.io.InputStreamReader
-import java.net.BindException
-import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.URL
-import java.net.URLDecoder
-import kotlin.math.*
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.call
+import io.ktor.server.application.install
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.compression.Compression
+import io.ktor.server.plugins.compression.gzip
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.request.receive
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.route
+import io.ktor.server.routing.routing
+import kotlinx.serialization.json.Json
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 fun haversineMeters(
     lon1: Double,
@@ -17,519 +43,221 @@ fun haversineMeters(
     lon2: Double,
     lat2: Double,
 ): Double {
-    val R = 6371000.0
+    val earthRadiusMeters = 6_371_000.0
     val phi1 = Math.toRadians(lat1)
     val phi2 = Math.toRadians(lat2)
-    val dphi = Math.toRadians(lat2 - lat1)
-    val dlambda = Math.toRadians(lon2 - lon1)
-    val a = sin(dphi / 2).pow(2.0) + cos(phi1) * cos(phi2) * sin(dlambda / 2).pow(2.0)
-    val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    return R * c
+    val deltaPhi = Math.toRadians(lat2 - lat1)
+    val deltaLambda = Math.toRadians(lon2 - lon1)
+    val a = sin(deltaPhi / 2).pow(2.0) + cos(phi1) * cos(phi2) * sin(deltaLambda / 2).pow(2.0)
+    return earthRadiusMeters * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 
-private val cachedNumbatDemandModel: RegionDemandModel? by lazy {
-    NumbatDemandLoader.loadFromResources()
-}
+private val plannerJson =
+    Json {
+        prettyPrint = false
+        ignoreUnknownKeys = false
+        encodeDefaults = true
+    }
 
 fun main() {
-    var port = 5000
-    val maxPort = 5010
-    var server: HttpServer? = null
+    val port = findFreePort(5000..5010)
+        ?: error("Failed to bind to any port in range 5000..5010. Please free a port and try again.")
+    println("PublicTransportationPlanner running at http://127.0.0.1:$port")
+    embeddedServer(Netty, host = "127.0.0.1", port = port, module = Application::plannerModule).start(wait = true)
+}
 
-    while (server == null && port <= maxPort) {
-        try {
-            server = HttpServer.create(InetSocketAddress(port), 0)
-        } catch (e: BindException) {
-            System.err.println("Port $port is in use, trying ${port + 1}...")
-            port += 1
+fun Application.plannerModule(service: PlannerService = PlannerService(plannerJson)) {
+    install(ContentNegotiation) { json(plannerJson) }
+    install(Compression) { gzip() }
+    install(StatusPages) {
+        exception<PlannerValidationException> { call, cause ->
+            call.respond(HttpStatusCode.BadRequest, ApiError(cause.code, cause.message ?: "Invalid request"))
+        }
+        exception<MissingSessionException> { call, cause ->
+            call.respond(
+                HttpStatusCode.Conflict,
+                ApiError("SESSION_MISSING", cause.message ?: "Analysis session is unavailable", mapOf("sessionId" to cause.sessionId)),
+            )
+        }
+        exception<Throwable> { call, cause ->
+            cause.printStackTrace()
+            call.respond(HttpStatusCode.InternalServerError, ApiError("INTERNAL_ERROR", "The planner could not complete the request"))
         }
     }
 
-    if (server == null) {
-        System.err.println("Failed to bind to any port in range 5000..$maxPort. Please free a port and try again.")
-        return
-    }
+    routing {
+        route("/api/v1") {
+            get("/coverage") { call.respond(service.coverage()) }
+            post("/networks/generate") { call.respond(service.generateNetwork(call.receive())) }
+            post("/analysis/sessions") { call.respond(HttpStatusCode.Created, service.createSession(call.receive())) }
+            get("/analysis/sessions/{id}/demand") {
+                val id = call.parameters["id"] ?: throw PlannerValidationException("Missing session ID")
+                val offset = call.request.queryParameters["offset"]?.toIntOrNull() ?: 0
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
+                call.respond(service.demandPage(id, offset, limit))
+            }
+            get("/analysis/sessions/{id}/demand.csv") {
+                val id = call.parameters["id"] ?: throw PlannerValidationException("Missing session ID")
+                call.response.headers.append(HttpHeaders.ContentDisposition, "attachment; filename=simulated-demand.csv")
+                call.respondText(service.demandCsv(id), ContentType.parse("text/csv; charset=utf-8"))
+            }
+            get("/analysis/sessions/{id}/issues") {
+                val id = call.parameters["id"] ?: throw PlannerValidationException("Missing session ID")
+                call.respond(service.issues(id))
+            }
+            post("/analysis/sessions/{id}/journeys") {
+                val id = call.parameters["id"] ?: throw PlannerValidationException("Missing session ID")
+                call.respond(service.journey(id, call.receive()))
+            }
+            post("/analysis/sessions/{id}/simulations") {
+                val id = call.parameters["id"] ?: throw PlannerValidationException("Missing session ID")
+                call.respond(service.simulation(id, call.receive()))
+            }
+        }
 
-    // Serve / -> map.html and static resources
-    server.createContext("/") { exchange ->
-        try {
-            val uri = exchange.requestURI.path
-            val path = if (uri == "/" || uri.isEmpty()) "/map.html" else uri
-            val resourceStream = object {}.javaClass.getResourceAsStream(path)
-            if (resourceStream == null) {
-                val notFound = "404 Not Found"
-                exchange.sendResponseHeaders(404, notFound.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(notFound.toByteArray()) }
+        get("/density") {
+            val lon = call.request.queryParameters["lon"]?.toDoubleOrNull()
+                ?: throw PlannerValidationException("Missing or invalid lon")
+            val lat = call.request.queryParameters["lat"]?.toDoubleOrNull()
+                ?: throw PlannerValidationException("Missing or invalid lat")
+            val maxMeters = call.request.queryParameters["max_m"]?.toDoubleOrNull()?.coerceIn(1.0, 20_000.0) ?: 1_000.0
+            val point = service.nearestDensity(lon, lat, maxMeters)
+            if (point == null) {
+                call.respond(HttpStatusCode.NotFound, ApiError("DENSITY_NOT_FOUND", "No supported grid cell is within the requested radius"))
             } else {
-                val content = resourceStream.readAllBytes()
-                val contentType =
-                    when {
-                        path.endsWith(".html") -> "text/html; charset=utf-8"
-                        path.endsWith(".js") -> "application/javascript"
-                        path.endsWith(".css") -> "text/css"
-                        path.endsWith(".png") -> "image/png"
-                        path.endsWith(".jpg") || path.endsWith(".jpeg") -> "image/jpeg"
-                        else -> "application/octet-stream"
-                    }
-                exchange.responseHeaders.add("Content-Type", contentType)
-                exchange.sendResponseHeaders(200, content.size.toLong())
-                exchange.responseBody.use { it.write(content) }
-            }
-        } catch (e: IOException) {
-            e.printStackTrace()
-            try {
-                exchange.sendResponseHeaders(500, -1)
-            } catch (_: Exception) {
-            }
-        } finally {
-            try {
-                exchange.close()
-            } catch (_: Exception) {
+                call.respond(DensityResponse(point.lon, point.lat, point.value, haversineMeters(lon, lat, point.lon, point.lat)))
             }
         }
-    }
 
-    // Proxy endpoint (existing)
-    server.createContext("/proxy") { exchange ->
-        try {
-            // Use rawQuery so percent-encoded '&' (%26) inside a URL param isn't split prematurely.
-            // Each param value is then individually URLDecoder-decoded below.
-            val query = exchange.requestURI.rawQuery ?: ""
-            val params =
-                query
-                    .split("&")
-                    .mapNotNull { part ->
-                        val idx = part.indexOf('=')
-                        if (idx <= 0) null else part.substring(0, idx) to URLDecoder.decode(part.substring(idx + 1), "UTF-8")
-                    }.toMap()
-
-            val rawUrl = params["url"]
-            if (rawUrl == null || rawUrl.isBlank()) {
-                val msg = "Missing 'url' query parameter"
-                exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            var target = rawUrl
-            val lat = params["lat"]
-            val lon = params["lon"]
-            if (lat != null && lon != null) {
-                target = target.replace("{lat}", lat).replace("{lon}", lon)
-            }
-
-            if (!(target.startsWith("http://") || target.startsWith("https://"))) {
-                val msg = "Invalid target URL"
-                exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            val url = URL(target)
-            println("[proxy] Requesting: $target")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
-            conn.instanceFollowRedirects = true
-
-            try {
-                conn.setRequestProperty("User-Agent", "PublicTransportationPlanner/1.0")
-                val ghToken = System.getenv("GITHUB_TOKEN")
-                if (!ghToken.isNullOrBlank()) {
-                    conn.setRequestProperty("Authorization", "token $ghToken")
-                }
-                if (url.host.contains("api.github.com")) {
-                    conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                } else if (url.host.contains("raw.githubusercontent.com") || url.host.contains("githubusercontent.com")) {
-                    conn.setRequestProperty("Accept", "text/plain, application/json, */*")
-                } else {
-                    conn.setRequestProperty("Accept", "application/json, text/plain, */*")
-                }
-            } catch (_: Exception) {
-            }
-
-            val code = conn.responseCode
-            println("[proxy] Response code $code for $target")
-            val contentType = conn.contentType ?: "application/octet-stream"
-            val input = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = input.readAllBytes()
-
-            exchange.responseHeaders.add("Content-Type", contentType)
-            exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
-            exchange.sendResponseHeaders(code, body.size.toLong())
-            exchange.responseBody.use { it.write(body) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            try {
-                val err = "Proxy error"
-                exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(err.toByteArray()) }
-            } catch (_: Exception) {
-            }
-        } finally {
-            try {
-                exchange.close()
-            } catch (_: Exception) {
-            }
+        post("/suggestions") {
+            val points = parseLegacyCsv(call.receiveText())
+            if (points.isEmpty()) throw PlannerValidationException("No valid points received")
+            call.respond(buildLegacySuggestions(points))
         }
-    }
 
-    // New: density lookup endpoint (no Python) - reads CSV resource and finds nearest point
-    server.createContext("/density") { exchange ->
-        try {
-            val q = exchange.requestURI.query ?: ""
-            val params =
-                q
-                    .split("&")
-                    .mapNotNull { part ->
-                        val idx = part.indexOf('=')
-                        if (idx <= 0) null else part.substring(0, idx) to URLDecoder.decode(part.substring(idx + 1), "UTF-8")
-                    }.toMap()
-
-            val lonStr = params["lon"]
-            val latStr = params["lat"]
-            val maxM = params["max_m"]?.toDoubleOrNull() ?: 1000.0
-            if (lonStr == null || latStr == null) {
-                val msg = "Missing lon or lat query parameters"
-                exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            val qlon = lonStr.toDoubleOrNull()
-            val qlat = latStr.toDoubleOrNull()
-            if (qlon == null || qlat == null) {
-                val msg = "Invalid lon/lat"
-                exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            // Stream the CSV resource from classpath
-            val resourceStream = object {}.javaClass.getResourceAsStream("/gbr_pd_2020_1km_ASCII_XYZ.csv")
-            if (resourceStream == null) {
-                val msg = "CSV resource not found"
-                exchange.sendResponseHeaders(500, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            val reader = BufferedReader(InputStreamReader(resourceStream))
-            var line = reader.readLine() // header
-            var bestLon = 0.0
-            var bestLat = 0.0
-            var bestZ = Double.NaN
-            var bestDist = Double.POSITIVE_INFINITY
-
-            while (true) {
-                line = reader.readLine() ?: break
-                val parts = line.split(',')
-                if (parts.size < 3) continue
-                val x = parts[0].toDoubleOrNull() ?: continue
-                val y = parts[1].toDoubleOrNull() ?: continue
-                val z = parts[2].toDoubleOrNull() ?: continue
-                val d = haversineMeters(qlon, qlat, x, y)
-                if (d < bestDist) {
-                    bestDist = d
-                    bestLon = x
-                    bestLat = y
-                    bestZ = z
-                }
-            }
-
-            reader.close()
-
-            if (bestDist <= maxM) {
-                val json =
-                    "{" +
-                        "\"lon\":$bestLon,\"lat\":$bestLat,\"value\":$bestZ,\"distance_m\":$bestDist" +
-                        "}"
-                exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
-                exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
-                exchange.sendResponseHeaders(200, json.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(json.toByteArray()) }
-            } else {
-                val msg = "No grid cell within $maxM meters (nearest ${"%.1f".format(bestDist)} m)"
-                exchange.sendResponseHeaders(404, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            try {
-                val err = "Density lookup error"
-                exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(err.toByteArray()) }
-            } catch (_: Exception) {
-            }
-        } finally {
-            try {
-                exchange.close()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    // Metro suggestions endpoint - builds a simple metro from CSV zones and returns stations/lines
-    server.createContext("/metro_suggestions") { exchange ->
-        try {
-            val resourceStream = object {}.javaClass.getResourceAsStream("/gbr_pd_2020_1km_ASCII_XYZ.csv")
-            if (resourceStream == null) {
-                val msg = "CSV resource not found"
-                exchange.sendResponseHeaders(500, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            val reader = BufferedReader(InputStreamReader(resourceStream))
-            var line = reader.readLine() // header
-            val zones = mutableListOf<org.lsoffice.Zone>()
-            var idx = 0
-            while (true) {
-                line = reader.readLine() ?: break
-                val parts = line.split(',')
-                if (parts.size < 3) continue
-                val x = parts[0].toDoubleOrNull() ?: continue
-                val y = parts[1].toDoubleOrNull() ?: continue
-                val z = parts[2].toDoubleOrNull() ?: continue
-                // use z as a density-like value; scale to a nominal population estimate
-                val pop = max(1.0, z * 1000.0)
-                val jobs = pop * 0.2
-                // Enrich with PTAL accessibility data (London zones only; fallback to 1.0 outside London)
-                val ptal = org.lsoffice.PtalLookup.nearest(x, y)
-                val socioWeight = if (ptal != null) org.lsoffice.PtalLookup.ptaiToSocioWeight(ptal.avgPtai2015) else 1.0
-                val activityVal = if (ptal != null) org.lsoffice.PtalLookup.ptaiToActivity(ptal.avgPtai2015) else 0.0
-                zones.add(
-                    org.lsoffice.Zone(
-                        "z$idx",
-                        x,
-                        y,
-                        pop,
-                        jobs,
-                        activity = activityVal,
-                        growthForecast = 1.0,
-                        socioeconomicWeight = socioWeight,
-                        zoningAllowsGrowth = true,
+        get("/metro_suggestions") {
+            val centralLondon =
+                StudyArea(
+                    listOf(
+                        Coordinate(-0.31, 51.41),
+                        Coordinate(0.08, 51.41),
+                        Coordinate(0.08, 51.62),
+                        Coordinate(-0.31, 51.62),
                     ),
                 )
-                idx += 1
-            }
-            reader.close()
+            val generated = service.generateNetwork(GenerateNetworkRequest(centralLondon))
+            call.respond(toLegacy(generated.network))
+        }
 
-            // run metro builder
-            val builder =
-                org.lsoffice.MetroBuilder(
-                    org.lsoffice.BuilderParams(capitalBudget = 1_000_000_000.0, operatingBudgetPerYear = 50_000_000.0),
-                )
-            val od = builder.buildODMatrix(zones)
-            val hubs = builder.computeHubScores(zones, od)
-            val stations = builder.generateCandidateStations(zones, hubs.take(100))
-            val corridors = builder.generateCandidateCorridors(hubs.take(100), od, zones)
-            val lines = builder.optimizeNetwork(corridors)
+        get("/proxy") { proxyNominatim(call.request.queryParameters["url"], call) }
 
-            // Calculate and display journey metrics
-            val metrics = builder.computeAverageJourneyMetrics(lines)
-            println("\n--- Average User Journeys Metrics ---")
-            println("Total Stations: ${metrics["total_stations"]?.toInt()}")
-            println("Reachable Pairs: ${metrics["reachable_pairs"]?.toInt()}")
-            println("Average Journey Time: ${"%.2f".format(metrics["average_time_mins"])} mins")
-            println("Maximum Journey Time: ${"%.2f".format(metrics["max_time_mins"])} mins")
-
-            println("All Journey Combinations:")
-            val journeys = builder.getAllJourneyTimes(lines)
-            journeys.sortedBy { it.third }.forEach { (from, to, time) ->
-                println("  $from -> $to : ${"%.2f".format(time)} mins")
-            }
-            println("------------------------------------\n")
-
-            // simple JSON serialization
-            val sb = StringBuilder()
-            sb.append("{")
-            sb.append("\"stations\":[")
-            stations.forEachIndexed { i, s ->
-                if (i > 0) sb.append(',')
-                sb.append('{')
-                sb.append("\"id\":\"").append(s.id).append("\",")
-                sb.append("\"lon\":").append(s.lon).append(',')
-                sb.append("\"lat\":").append(s.lat).append(',')
-                sb.append("\"catchment\":").append(s.catchmentPopulation)
-                sb.append('}')
-            }
-            sb.append("],\"lines\":[")
-            lines.forEachIndexed { i, l ->
-                if (i > 0) sb.append(',')
-                sb.append('{')
-                sb.append("\"id\":\"").append(l.id).append("\",")
-                sb.append("\"length_m\":").append(l.lengthMeters).append(',')
-                sb.append("\"cost\":").append(l.cost).append(',')
-                sb.append("\"stations\":[")
-                l.stations.forEachIndexed { j, st ->
-                    if (j > 0) sb.append(',')
-                    sb.append('{')
-                    sb.append("\"id\":\"").append(st.id).append("\",")
-                    sb.append("\"lon\":").append(st.lon).append(',')
-                    sb.append("\"lat\":").append(st.lat)
-                    sb.append('}')
-                }
-                sb.append("]}")
-            }
-            sb.append("]}")
-
-            val body = sb.toString().toByteArray()
-            exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
-            exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
-            exchange.sendResponseHeaders(200, body.size.toLong())
-            exchange.responseBody.use { it.write(body) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            try {
-                val err = "Metro build error"
-                exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(err.toByteArray()) }
-            } catch (_: Exception) {
-            }
-        } finally {
-            try {
-                exchange.close()
-            } catch (_: Exception) {
+        get("/") { call.respondResource("map.html") }
+        get("/{path...}") {
+            val path = call.parameters.getAll("path")?.joinToString("/") ?: ""
+            if (path.contains("..") || path.startsWith("api/")) {
+                call.respond(HttpStatusCode.NotFound, ApiError("NOT_FOUND", "Resource not found"))
+            } else {
+                call.respondResource(path)
             }
         }
     }
-
-    // Metro suggestions from client-provided points (POST body: CSV lines "lon,lat,value")
-    server.createContext("/suggestions") { exchange ->
-        try {
-            if (exchange.requestMethod != "POST") {
-                val msg = "Use POST with CSV body: lon,lat,value per line"
-                exchange.sendResponseHeaders(405, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            val body = exchange.requestBody.bufferedReader().readText()
-            val pointLines = body.split("\n", "\r\n").map { it.trim() }.filter { it.isNotEmpty() }
-            val gridPoints = mutableListOf<GridPoint>()
-            for (l in pointLines) {
-                val parts = l.split(',').map { it.trim() }
-                if (parts.size < 3) continue
-                val lon = parts[0].toDoubleOrNull() ?: continue
-                val lat = parts[1].toDoubleOrNull() ?: continue
-                val v = parts[2].toDoubleOrNull() ?: continue
-                gridPoints.add(GridPoint(lon, lat, v))
-            }
-
-            if (gridPoints.isEmpty()) {
-                val msg = "No valid points received"
-                exchange.sendResponseHeaders(400, msg.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(msg.toByteArray()) }
-                return@createContext
-            }
-
-            // Scale each grid point's density value by its PTAL demand weight
-            // (London points get a real PTAL multiplier; non-London points keep their original value)
-            val enrichedPoints =
-                gridPoints.map { gp ->
-                    val weight = org.lsoffice.PtalLookup.demandWeight(gp.lon, gp.lat)
-                    if (weight != 1.0) gp.copy(value = gp.value * weight) else gp
-                }
-
-            val builder = MetroBuilder(BuilderParams(capitalBudget = 1_000_000_000.0, operatingBudgetPerYear = 50_000_000.0))
-            val lines =
-                builder.buildNaturalNetworkFromGrid(
-                    enrichedPoints,
-                    minStationValue = 0.0,
-                    minCorridorLengthMeters = 2000.0,
-                    minStationsPerLine = 3,
-                    observedRegionDemand = cachedNumbatDemandModel,
-                )
-
-            // Calculate and display journey metrics
-            val metrics = builder.computeAverageJourneyMetrics(lines)
-            println("\n--- Average User Journeys Metrics ---")
-            println("Total Stations: ${metrics["total_stations"]?.toInt()}")
-            println("Reachable Pairs: ${metrics["reachable_pairs"]?.toInt()}")
-            println("Average Journey Time: ${"%.2f".format(metrics["average_time_mins"])} mins")
-            println("Maximum Journey Time: ${"%.2f".format(metrics["max_time_mins"])} mins")
-
-            println("All Journey Combinations:")
-            val journeys = builder.getAllJourneyTimes(lines)
-            journeys.sortedBy { it.third }.forEach { (from, to, time) ->
-                println("  $from -> $to : ${"%.2f".format(time)} mins")
-            }
-            println("------------------------------------\n")
-
-            val sb = StringBuilder()
-            sb.append("{")
-            sb.append("\"lines\":[")
-            lines.forEachIndexed { i: Int, l: org.lsoffice.Line ->
-                if (i > 0) sb.append(',')
-                sb.append('{')
-                sb.append("\"id\":\"").append(l.id).append("\",")
-                sb.append("\"type\":\"").append(l.type.name).append("\",")
-                sb.append("\"isLoop\":").append(l.isLoop).append(',')
-                sb.append("\"length_m\":").append(l.lengthMeters).append(',')
-                sb.append("\"cost\":").append(l.cost).append(',')
-                sb.append("\"trains_per_hour\":").append(l.trainsPerHour).append(',')
-                l.buildEstimate?.let { estimate ->
-                    sb.append("\"build_estimate\":{")
-                    sb.append("\"station_cost\":").append(estimate.stationCost).append(',')
-                    sb.append("\"land_interface_allowance\":").append(estimate.landInterfaceAllowance).append(',')
-                    sb.append("\"contingency\":").append(estimate.contingency).append(',')
-                    sb.append("\"total_cost\":").append(estimate.totalCost).append(',')
-                    sb.append("\"deep_bore_m\":").append(estimate.deepBoreMeters).append(',')
-                    sb.append("\"subsurface_m\":").append(estimate.subsurfaceMeters).append(',')
-                    sb.append("\"surface_or_elevated_m\":").append(estimate.surfaceOrElevatedMeters).append(',')
-                    sb.append("\"recommendation\":\"").append(estimate.recommendation.replace("\"", "\\\"")).append("\",")
-                    sb.append("\"segments\":[")
-                    estimate.segments.forEachIndexed { si, segment ->
-                        if (si > 0) sb.append(',')
-                        sb.append('{')
-                        sb.append("\"from\":\"").append(segment.fromStationId).append("\",")
-                        sb.append("\"to\":\"").append(segment.toStationId).append("\",")
-                        sb.append("\"length_m\":").append(segment.lengthMeters).append(',')
-                        sb.append("\"technology\":\"").append(segment.technology.name).append("\",")
-                        sb.append("\"civil_cost\":").append(segment.civilCost).append(',')
-                        sb.append("\"rationale\":\"").append(segment.rationale.replace("\"", "\\\"")).append("\"")
-                        sb.append('}')
-                    }
-                    sb.append("]},")
-                }
-                sb.append("\"stations\":[")
-                l.stations.forEachIndexed { j: Int, st: org.lsoffice.Station ->
-                    if (j > 0) sb.append(',')
-                    sb.append('{')
-                    sb.append("\"id\":\"").append(st.id).append("\",")
-                    sb.append("\"lon\":").append(st.lon).append(',')
-                    sb.append("\"lat\":").append(st.lat).append(',')
-                    sb.append("\"value\":").append(st.catchmentPopulation)
-                    sb.append('}')
-                }
-                sb.append("]}")
-            }
-            sb.append("]}")
-
-            val respBody = sb.toString().toByteArray()
-            exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
-            exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
-            exchange.sendResponseHeaders(200, respBody.size.toLong())
-            exchange.responseBody.use { it.write(respBody) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            try {
-                val err = "Suggestions error"
-                exchange.sendResponseHeaders(500, err.toByteArray().size.toLong())
-                exchange.responseBody.use { it.write(err.toByteArray()) }
-            } catch (_: Exception) {
-            }
-        } finally {
-            try {
-                exchange.close()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    server.executor = null
-    server.start()
-    println("Server started at http://localhost:$port/")
 }
+
+private suspend fun ApplicationCall.respondResource(path: String) {
+    val stream = object {}.javaClass.getResourceAsStream("/$path")
+    if (stream == null) {
+        respond(HttpStatusCode.NotFound, ApiError("NOT_FOUND", "Resource not found"))
+        return
+    }
+    val type =
+        when (path.substringAfterLast('.', "")) {
+            "html" -> ContentType.Text.Html
+            "css" -> ContentType.Text.CSS
+            "js" -> ContentType.parse("application/javascript")
+            "json", "geojson" -> ContentType.Application.Json
+            "csv" -> ContentType.parse("text/csv")
+            else -> ContentType.Application.OctetStream
+        }
+    respondBytes(stream.use { it.readAllBytes() }, type)
+}
+
+private fun buildLegacySuggestions(points: List<GridPoint>): LegacySuggestionsResponse {
+    val enriched = points.map { point -> point.copy(value = point.value * PtalLookup.demandWeight(point.lon, point.lat)) }
+    val lines =
+        MetroBuilder(BuilderParams(1_000_000_000.0, 50_000_000.0), debug = false)
+            .buildNaturalNetworkFromGrid(enriched, minStationValue = 0.0, minCorridorLengthMeters = 2_000.0, minStationsPerLine = 3)
+    return LegacySuggestionsResponse(
+        lines.map { line ->
+            LegacyLineResponse(
+                id = line.id,
+                type = line.type.name,
+                isLoop = line.isLoop,
+                lengthMeters = line.lengthMeters,
+                cost = line.cost,
+                trainsPerHour = line.trainsPerHour,
+                stations = line.stations.map { LegacyStationResponse(it.id, it.lon, it.lat, it.catchmentPopulation) },
+            )
+        },
+    )
+}
+
+private fun toLegacy(network: PlannerNetwork): LegacySuggestionsResponse {
+    val stations = network.stations.associateBy { it.id }
+    return LegacySuggestionsResponse(
+        network.lines.map { line ->
+            LegacyLineResponse(
+                id = line.id,
+                type = line.role.name,
+                isLoop = line.isLoop,
+                lengthMeters = line.segments.sumOf { it.lengthMeters },
+                cost = line.segments.sumOf { it.lengthMeters } * 100_000.0,
+                trainsPerHour = line.trainsPerHour,
+                stations = line.stationIds.mapNotNull(stations::get).map { LegacyStationResponse(it.id, it.lon, it.lat, it.demandValue) },
+            )
+        },
+    )
+}
+
+private fun parseLegacyCsv(body: String): List<GridPoint> =
+    body.lineSequence().mapNotNull { line ->
+        val parts = line.trim().split(',')
+        if (parts.size < 3) return@mapNotNull null
+        val lon = parts[0].toDoubleOrNull() ?: return@mapNotNull null
+        val lat = parts[1].toDoubleOrNull() ?: return@mapNotNull null
+        val value = parts[2].toDoubleOrNull() ?: return@mapNotNull null
+        GridPoint(lon, lat, value)
+    }.toList()
+
+private suspend fun proxyNominatim(
+    rawUrl: String?,
+    call: io.ktor.server.application.ApplicationCall,
+) {
+    if (rawUrl.isNullOrBlank()) throw PlannerValidationException("Missing url query parameter")
+    val uri = runCatching { URI(rawUrl) }.getOrElse { throw PlannerValidationException("Invalid proxy URL") }
+    if (uri.scheme != "https" || uri.host.lowercase() != "nominatim.openstreetmap.org") {
+        throw PlannerValidationException("Only HTTPS requests to nominatim.openstreetmap.org are allowed", "PROXY_HOST_REJECTED")
+    }
+    val request =
+        HttpRequest.newBuilder(uri)
+            .timeout(Duration.ofSeconds(10))
+            .header("User-Agent", "PublicTransportationPlanner/2.0 (local planner)")
+            .header("Accept", "application/json")
+            .GET()
+            .build()
+    val response =
+        HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build()
+            .send(request, HttpResponse.BodyHandlers.ofByteArray())
+    call.respondBytes(
+        response.body(),
+        ContentType.parse(response.headers().firstValue("content-type").orElse("application/json")),
+        HttpStatusCode.fromValue(response.statusCode()),
+    )
+}
+
+private fun findFreePort(range: IntRange): Int? =
+    range.firstOrNull { port ->
+        runCatching {
+            ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")).use { }
+            true
+        }.getOrDefault(false)
+    }
