@@ -1,5 +1,7 @@
 # Metro Algorithm Debug Guide
 
+The STEP checkpoints below describe legacy `/suggestions`. The staged Create workflow uses the sparse generator and typed SSE checkpoints at the end of this guide.
+
 ## Instrumentation Added
 
 The `buildNaturalNetworkFromGrid` function now logs at 8 critical checkpoints. Debug output is on by default (pass `debug=false` to MetroBuilder constructor to disable).
@@ -208,14 +210,16 @@ When you see unexpected behavior:
 
 Never blindly tweak. The logs tell you exactly where to look.
 
-## Planner workspace integration
+## Staged planner generator checkpoints
 
-`MetroBuilder.buildNaturalNetworkFromGrid` still owns automatic corridor generation and its eight checkpoints. The planner API then converts the returned lines into the versioned editable model:
+The Create stage and `/api/v1/generation/jobs` use `SparseParetoGenerator`, not `MetroBuilder.buildNaturalNetworkFromGrid`. The eight STEP messages above apply only to legacy `/suggestions`. Inspect typed SSE events and the job status for the new flow:
 
-1. Existing shared interchange IDs are preserved.
-2. Legacy types become `RADIAL`, `ORBITAL_BYPASS`, or `CORE_DISTRIBUTOR` planning roles.
-3. Segments above the generated network's 75th-percentile endpoint demand begin as underground; the rest begin overground.
-4. Every segment length is recomputed from its final station coordinates.
-5. Journey analysis, scores, and simulation use `PrimitiveRoutingEngine`, not the older `MetroBuilder` O(V²) journey helper.
+1. `SEED_DISCOVERED`: a valid distinct corridor entered the candidate pool. If few appear, inspect place count, Delaunay edges, 2 km minimum, turn angles, and demand/km.
+2. `RESIDUAL_HEATMAP_UPDATED`: edge residuals changed after 0.70 decay. No update usually means there were no accepted seeds.
+3. `BEAM_STEP`: the 256-state preview processed another candidate. A 48-candidate pool is the hard maximum.
+4. `BRANCH_PRUNED`: weighted-profile upper bound could not beat its incumbent.
+5. `CORRIDOR_COMMITTED` and `PLAN_FORMED`: a selected bundle and its plan were emitted. These are never visual-throttled.
+6. `SEARCH_REFINED`: nondominated filtering finished. If fewer than five plans remain, inspect `insufficientFrontierReason` and compare the five profiles.
+7. `COMPLETE` or `FAILED`: terminal state. The status endpoint carries the full result or error; use it on reconnect.
 
-When generation changes, inspect both the checkpoint output and the resulting editable contract: stable station IDs, segment endpoints, infrastructure assumptions, line frequency, interchange identity, and `/api/v1/networks/generate` JSON fields.
+For a medium London regression, the balanced result should have several distinct lines, or a specific insufficiency reason. Compare candidate types, station count, final segment metres, estimated cost, interchange IDs, connectivity, and certification/gap. Change one threshold at a time and update this guide when its meaning changes.

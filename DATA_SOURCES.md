@@ -31,3 +31,15 @@
 
 - Base map: OpenStreetMap tiles and attribution, loaded at runtime.
 - Optional station naming: OpenStreetMap Nominatim. The local proxy accepts only HTTPS requests to `nominatim.openstreetmap.org` and does not forward credentials.
+
+## NUMBAT 2024 regional demand
+
+- Source: Transport for London, [Project NUMBAT methodology](https://crowding.data.tfl.gov.uk/NUMBAT/Intro_to_NUMBAT.pdf). The repository includes five 2024 day-group OD CSV fixtures and a derived station lookup in `from-to-data/`.
+- Offline preparation: `./gradlew aggregateNumbat` maps station pairs to 500 m London region cells and writes `from-to-data/derived/numbat-regional-2024.csv` (141,984 regional pairs plus header). Weekday/day-group weights are 1, 3, 1, 1, 1 for Monday, Tuesday–Thursday, Friday, Saturday, Sunday. The compact resource has SHA-256 `3d2c71f5e9ea85acb15a993711aecaaa93607cae06b782e2d03a9fbe157d470d`.
+- Calibration: `./gradlew calibrateNumbat` writes a checksum, sweep metrics, and the selected preview knee to `calibration/numbat-2024.json`.
+- Runtime treatment: observed regional demand augments sparse-edge gravity demand. It is historical TfL rail usage, not observed demand for the proposed lines. Custom gravity-only mode is fully simulated.
+- Redistribution terms for the bundled NUMBAT source files have not been independently verified. The repository's MIT code licence does not grant rights to TfL data.
+
+## JTS
+
+- `org.locationtech.jts:jts-core:1.20.0` supplies Delaunay triangulation. [JTS licensing](https://github.com/locationtech/jts/blob/master/FAQ-LICENSING.md) offers Eclipse Distribution License 1.0 or Eclipse Public License 2.0. The project uses the EDL option.

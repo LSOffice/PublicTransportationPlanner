@@ -20,18 +20,18 @@ The product exposes the planning model rather than hiding it: synthetic demand, 
 
 ## Operating Context
 
-Projects are single-user and local. Planners work in two modes: Design for network creation and demand analysis, and Operate for journey planning, train movement, disruption scenarios, and issue diagnosis. Project files must be portable between browsers through versioned JSON export and import.
+Projects are single-user and local. Planners move through Create, Refine, and Analyse stages in one map workspace. Create streams candidate and plan search; Refine edits a chosen network; Analyse handles demand, journeys, service, issues, and disruptions. Project files must be portable between browsers through versioned JSON export and import.
 
 ## Capabilities and Constraints
 
 - Planning is restricted to the population-supported part of Greater London.
 - Population coverage and PTAL coverage are distinct; missing PTAL uses an explicit neutral fallback.
-- Demand is deterministic, synthetic, and labelled as such. Live TfL conditions and observed passenger counts are out of scope.
+- Historical NUMBAT OD evidence can steer candidate generation; simulated gravity fills unmatched areas. Analysis OD demand is deterministic, synthetic, and labelled as such. Live TfL conditions are out of scope.
 - Lines have a planning role; each segment independently records underground or overground infrastructure.
 - Service uses frequency/headway assumptions rather than exact timetables.
 - Dijkstra and A* must produce equivalent optimal journey costs and include expected wait and transfer time.
 - Weather disruptions apply only to overground track.
-- The application remains a Kotlin/JVM service with a plain HTML/CSS/JavaScript frontend and no database.
+- The application remains a Kotlin/JVM service with a TypeScript browser bundle and no database.
 - The planning workspace is desktop-only.
 
 ## Evidence on Hand
@@ -39,7 +39,7 @@ Projects are single-user and local. Planners work in two modes: Design for netwo
 - A bundled 2020 one-kilometre population grid covering Great Britain.
 - Bundled 2015 London PTAL centroid data with LSOA identifiers.
 - Existing automatic natural-network generation and checkpoint documentation.
-- No observed origin-destination journey dataset, construction-cost evidence, live operations feed, customer evidence, or production SLA is available; future work must not imply otherwise.
+- Bundled NUMBAT 2024 provides historical observed OD usage. Construction costs remain coarse estimates; no live operations feed, customer evidence, or production SLA is available.
 
 ## Product Principles
 

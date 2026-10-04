@@ -85,7 +85,7 @@ Depth is shallow and operational. Strong colour is semantic: blue acts, green co
 
 **Key Characteristics:**
 
-- Dense three-pane desktop geography with a persistent analysis drawer
+- Full-map desktop geography with one floating stage panel, a hideable inspector, and an analysis drawer
 - Compact controls, crisp one-pixel rules, and tabular operational figures
 - Pattern and text reinforce every colour-coded planning state
 - Restrained motion reserved for state changes and live train movement
@@ -141,13 +141,13 @@ The palette combines cool paper neutrals with sparse, semantic transport colours
 
 ## Layout
 
-The workspace uses a fixed 52px project bar over a three-column desktop grid: a 316px workflow panel, a flexible map with a 420px minimum, and a 336px inspector. At narrower desktop widths the side panels reduce to 292px and 310px. The analysis surface is a 278px drawer inset 12px from the map edges.
+The workspace uses a fixed 52px project bar over a full-viewport Leaflet map. A 326px stage panel floats 12px from the left edge; a 326px contextual inspector floats at the right. Both use 94% opaque paper with shallow blur and can hide independently. At narrower desktop widths they reduce to 300px. The analysis drawer remains inset from the map edges.
 
 Spacing follows a compact rhythm built around 6px, 9px, 12px, and 16px. Related controls remain tight; section boundaries and one-pixel rules provide separation. Below 1100px, the planning surface is replaced by a clear desktop-workspace requirement rather than degrading the map and evidence into unusable stacked panels.
 
 ## Elevation & Depth
 
-The system is flat by default. Tonal layering and rules separate permanent panels; soft, downward shadows are reserved for floating map controls, popups, the analysis drawer, and dialogs.
+The system is flat by default. Tonal layering and rules separate floating panels; soft, downward shadows are reserved for floating map controls, popups, the analysis drawer, and dialogs.
 
 ### Shadow Vocabulary
 
@@ -157,7 +157,7 @@ The system is flat by default. Tonal layering and rules separate permanent panel
 
 ### Named Rules
 
-**The Flat-By-Default Rule.** Permanent work surfaces use either a rule or tonal contrast; shadows indicate a surface floating over the map.
+**The Flat-By-Default Rule.** Work surfaces use either a rule or tonal contrast; shadows indicate a surface floating over the map.
 
 ## Shapes
 
@@ -193,7 +193,7 @@ Corners are compact and functional: 5px for controls, 8px for workspace surfaces
 
 ### Navigation
 
-The project bar is deep slate with compact outlined actions. Design/Operate and analysis tabs use pale selection blue, deep-blue text, and an inset blue rule. The narrow-screen state replaces navigation with a single explanatory gate.
+The project bar is deep slate with compact outlined actions. Create/Refine/Analyse and analysis tabs use pale selection blue, deep-blue text, and an inset blue rule. The narrow-screen state replaces navigation with a single explanatory gate.
 
 ### Map Evidence
 

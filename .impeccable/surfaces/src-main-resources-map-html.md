@@ -2,15 +2,15 @@
 version: 1
 slug: "src-main-resources-map-html"
 primary_target: "src/main/resources/map.html"
-related_targets: ["src/main/resources/planner.css","src/main/resources/planner.js"]
+related_targets: ["src/main/resources/planner.css","frontend/planner.ts"]
 ---
 
 # Planning workspace
 
-- Scope: `src/main/resources/map.html` and its static CSS/JavaScript modules
+- Scope: `src/main/resources/map.html` and its CSS/TypeScript modules
 - Mode: Operate
 - Audience: city planners evaluating hypothetical Greater London metro networks
-- Job: create a network, understand its demand and score, then operate it under normal and disrupted conditions
+- Job: create a sparse Pareto network, refine a chosen plan, then analyse its demand and operation
 - Primary task: edit the map without losing sight of coverage, assumptions, selection state, or analysis freshness
 - Constraints: desktop-only; Leaflet remains the geographic canvas; simulated values are labelled; colour is never the sole state channel
 
@@ -22,7 +22,7 @@ related_targets: ["src/main/resources/planner.css","src/main/resources/planner.j
 
 **STORY:** The planner first sees where evidence is valid, then draws or generates a network, selects real map objects to edit their assumptions, opens synthetic demand evidence, and switches the same project into operation. Score changes and analysis freshness remain visible throughout.
 
-**FIRST VIEWPORT:** A 52-pixel project bar spans the top. Below it, a 316-pixel left workflow panel, the dominant Leaflet map, and a 336-pixel contextual inspector share the viewport. A compact analysis drawer rises from the map bottom. The Design/Operate switch anchors the left panel; the primary action is the current workflow action directly beneath it. The signature interaction is selecting any line, station, issue, demand pair, or journey step and seeing the same object highlighted simultaneously on the map and in the inspector.
+**FIRST VIEWPORT:** A 52-pixel project bar spans a full-map Leaflet canvas. A 326-pixel translucent paper stage panel floats at left, with Create, Refine, and Analyse tabs; an independently hideable contextual inspector floats at right. The primary action is Draw study area, followed by a streamed generation search. A high-DPI canvas records candidate paths over the geographic map, mirrored by a textual event timeline. The signature interaction is choosing a Pareto plan and toggling its candidate corridors while exact metrics update.
 
 **FORM:** Brief-pinned dense GIS workspace, first choice from the approved planning round; seed key `brief-pinned-dense-gis-operate`. Motion is limited to 180ms panel and selection-state transitions, live train interpolation, and one analysis-freshness pulse.
 

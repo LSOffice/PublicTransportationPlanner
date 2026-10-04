@@ -1,82 +1,55 @@
 # London Network Planner
 
-London Network Planner is a local desktop planning workspace for designing and testing hypothetical metro networks around Greater London. It combines an editable Leaflet map with Kotlin generation, synthetic origin-destination demand, network scoring, frequency-aware journey planning, and deterministic disruption simulation.
+A local desktop workspace for proposing and testing hypothetical metro networks around Greater London. The map, network editor, synthetic demand analysis, journey routing, and disruption simulation run from one Kotlin application. Results are planning estimates, not live TfL conditions or engineering feasibility claims.
 
-The application is a planning model, not a live TfL service. OD journeys, capacity loads, scores, costs, and train movements are simulated and are labelled accordingly in the UI.
+## Workflow
 
-## What it does
+1. **Create:** draw a supported study area, choose NUMBAT blend or simulated gravity demand, set guidance strength, and start a streamed search. The timeline and map show candidate discovery; choose one of the nondominated plans. If fewer than five distinct plans exist, the result gives an insufficiency reason.
+2. **Refine:** toggle candidate corridors, adjust radial, orbital, and core soft caps, draw lines, edit stations and track, inspect local length feedback and server-evaluated metrics, or download a schematic SVG.
+3. **Analyse:** inspect simulated OD demand, issues, Dijkstra/A* journeys, service levels, disruptions, and train simulation.
 
-- Draw a supported London study area and generate an editable metro proposal.
-- Draw manual radial, cross-city trunk, orbital bypass, and core distributor lines.
-- Mark each segment independently as underground or overground.
-- Save up to 20 local project revisions in IndexedDB and import/export versioned JSON projects.
-- Generate and inspect a downloadable synthetic point-to-point journeys/day dataset.
-- Score demand served, journey time, capacity, connectivity, construction efficiency, and resilience.
-- Compare Dijkstra and A* routes with boarding waits, transfer waits, dwell, and infrastructure speed.
-- Change line frequency and inspect headway effects.
-- Simulate trains and cancellations, track incidents, weather, signal failures, and station closures.
-- Detect coverage gaps, long waits, long segments, overcrowding, and other deterministic issues.
+Stages unlock when a network exists; you can always return to earlier work. Hide the floating stage panel or inspector to see more of the map. Projects autosave to IndexedDB; the Project menu handles new, save, import, and export. JSON schema v2 records generation settings and corridor provenance. Existing v1 projects migrate when opened.
 
-## Architecture
+## Architecture and run
 
-- Kotlin 2.2.20, JVM toolchain 23, Gradle 8.14 wrapper.
-- Ktor 2.3.12 on Netty, bound to `127.0.0.1` on the first free port in `5000..5010`.
-- kotlinx serialization for versioned API and project contracts.
-- Plain HTML/CSS/JavaScript with pinned Leaflet 1.9.4 and Leaflet Draw 1.0.4 CDN assets.
-- No database, accounts, cloud synchronization, frontend build system, or live transport feed.
-- Editable networks compile into primitive CSR-style arrays and a primitive binary min-heap for routing.
-
-The older `MetroBuilder` remains the automatic generation engine. Planner analysis uses the new project model and `PrimitiveRoutingEngine`; the legacy `/suggestions`, `/metro_suggestions`, and `/density` contracts remain available for compatibility.
-
-## Run
+- Kotlin 2.2.20, JVM toolchain 23, Gradle 8.14 wrapper, Ktor 3.6 Netty on the first free `127.0.0.1:5000..5010` port.
+- Spatial-hash clustering and JTS 1.20 Delaunay edges keep graph storage proportional to places. A principal-axis chain handles collinear sites. A bounded corridor search uses residual demand, angular penalties, and five objective profiles. The final weighted-profile search runs within an eight-second refinement budget and reports certification/gap status.
+- A compact 2024 NUMBAT regional OD resource supplies optional observed evidence; unmatched locations use deterministic gravity demand. Analysis demand remains separately simulated and is labelled as such.
+- TypeScript and pinned esbuild/Vitest produce a generated browser bundle during the Gradle build. The UI uses Leaflet 1.9.4 and Leaflet Draw 1.0.4 from CDNs.
 
 ```bash
-./gradlew build
+./gradlew clean build
 ./gradlew run
 ```
 
-Open the URL printed by the server. The full editor requires a viewport at least 1100 pixels wide.
-
-## Typical workflow
-
-1. In **Design**, draw a study area within the supported green Greater London boundary.
-2. Generate a network or draw lines manually. Select lines, stations, and segments to edit them.
-3. Open **Demand** to inspect the explicitly simulated OD matrix and score.
-4. Switch to **Operate**, set trains per hour, and compare Dijkstra/A* journeys.
-5. Add disruption scenarios and play the train simulation. Weather targets list only overground segments.
-6. Use **Issues** to navigate directly to inefficient or overloaded network elements.
-7. Save locally or export the complete project as JSON.
+Open the printed URL at a desktop width of at least 1100 px. No database or account is required.
 
 ## API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/v1/coverage` | Supported Greater London geometry and evidence metadata |
-| `POST` | `/api/v1/networks/generate` | Generate an editable network for a study polygon |
-| `POST` | `/api/v1/analysis/sessions` | Compile a project, synthetic demand, score, and issues |
+| `POST` | `/api/v1/generation/jobs` | Create a search job (`202`) |
+| `GET` | `/api/v1/generation/jobs/{id}/events` | Typed SSE with monotonic IDs and replay via `Last-Event-ID` |
+| `GET` | `/api/v1/generation/jobs/{id}` | Recover status and final plans |
+| `DELETE` | `/api/v1/generation/jobs/{id}` | Cancel a job |
+| `POST` | `/api/v1/generation/jobs/{id}/evaluate` | Evaluate a selected candidate bundle |
+| `POST` | `/api/v1/networks/generate` | Synchronous balanced-plan compatibility response |
+| `POST` | `/api/v1/analysis/sessions` | Compile demand, score, and issues |
 | `GET` | `/api/v1/analysis/sessions/{id}/demand` | Page through simulated OD rows |
-| `GET` | `/api/v1/analysis/sessions/{id}/demand.csv` | Download the simulated OD dataset |
 | `POST` | `/api/v1/analysis/sessions/{id}/journeys` | Route with Dijkstra or A* |
-| `POST` | `/api/v1/analysis/sessions/{id}/simulations` | Compile headway-derived train runs |
+| `POST` | `/api/v1/analysis/sessions/{id}/simulations` | Compile headway-derived runs |
 
-Analysis sessions are bounded in-memory caches. Saved browser projects contain inputs and model versions, so sessions and derived demand can be reproduced after restart.
+Jobs retain a bounded replay buffer; at most four jobs live for 30 minutes. Analysis sessions are also bounded in memory. `/suggestions` and `/metro_suggestions` remain legacy compatibility routes.
 
-## Verification
+## Checks and limits
 
 ```bash
+npm test
+npm run build
 ./gradlew test
-./gradlew build
+./gradlew clean build
 ```
 
-Tests cover primitive routing, Dijkstra/A* parity, expected waits, track incidents, infrastructure-specific weather behaviour, exact synthetic journey totals, score weights, and coverage geometry.
+The graph benchmark test records edge counts for 1k, 5k, and 10k synthetic places. See `PLANNER_MODEL.md` for objectives and certification, `calibration/numbat-2024.json` for the offline cap sweep, `DATA_SOURCES.md` for provenance, and `DEBUG_GUIDE.md` for generation checkpoints.
 
-See `PLANNER_MODEL.md` for formulas and limitations, `DATA_SOURCES.md` for provenance and attribution, and `DEBUG_GUIDE.md` before changing automatic-generation thresholds.
-
-## Important limitations
-
-- Population-grid values are demand-density proxies, not asserted exact population counts.
-- PTAL is 2015 evidence and applies only inside the bundled London coverage.
-- The fixed score is a comparison aid, not a business case or engineering feasibility assessment.
-- Speeds, capacities, cost multipliers, and surface-reference time are visible model assumptions.
-- Track alignments do not account for geology, rights of way, utilities, planning consent, or construction access.
-- No project licence is currently declared. Check source-data and code licensing before redistribution.
+Population values are demand proxies. NUMBAT is historical observed rail demand and does not measure demand for a proposed route. Build costs, route geometry, capacity, and service impacts are illustrative. Alignments do not resolve geology, property, utilities, consent, or detailed engineering. Project code is MIT licensed; source datasets retain their own terms.
