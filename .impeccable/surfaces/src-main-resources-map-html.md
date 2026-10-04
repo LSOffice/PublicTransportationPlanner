@@ -12,7 +12,7 @@ related_targets: ["src/main/resources/planner.css","frontend/planner.ts"]
 - Audience: city planners evaluating hypothetical Greater London metro networks
 - Job: create a sparse Pareto network, refine a chosen plan, then analyse its demand and operation
 - Primary task: edit the map without losing sight of coverage, assumptions, selection state, or analysis freshness
-- Constraints: desktop-only; Leaflet remains the geographic canvas; simulated values are labelled; colour is never the sole state channel
+- Constraints: desktop and tablet from 768px; Leaflet remains the geographic canvas; simulated values are labelled; colour is never the sole state channel
 
 ## Direction contract
 
@@ -22,7 +22,9 @@ related_targets: ["src/main/resources/planner.css","frontend/planner.ts"]
 
 **STORY:** The planner first sees where evidence is valid, then draws or generates a network, selects real map objects to edit their assumptions, opens synthetic demand evidence, and switches the same project into operation. Score changes and analysis freshness remain visible throughout.
 
-**FIRST VIEWPORT:** A 52-pixel project bar spans a full-map Leaflet canvas. A 326-pixel translucent paper stage panel floats at left, with Create, Refine, and Analyse tabs; an independently hideable contextual inspector floats at right. The primary action is Draw study area, followed by a streamed generation search. A high-DPI canvas records candidate paths over the geographic map, mirrored by a textual event timeline. The signature interaction is choosing a Pareto plan and toggling its candidate corridors while exact metrics update.
+**FIRST VIEWPORT:** A project start screen offers New project, existing browser projects, and JSON import before opening the map. The map workspace has a 52-pixel project bar and a 326-pixel paper task panel at left; it becomes a bottom sheet on tablets. The primary Create action is Draw study area, followed by a streamed generation search. A high-DPI canvas records candidate paths over the geographic map, mirrored by a textual event timeline. The signature interaction is choosing a Pareto plan, adjusting its visible draft corridors, and locking in the authoritative evaluation.
+
+Map utilities form one top-right toolbar for Fit, zoom, and Layers. The legend sits in Layers, and task feedback stays in the panel footer.
 
 **FORM:** Brief-pinned dense GIS workspace, first choice from the approved planning round; seed key `brief-pinned-dense-gis-operate`. Motion is limited to 180ms panel and selection-state transitions, live train interpolation, and one analysis-freshness pulse.
 

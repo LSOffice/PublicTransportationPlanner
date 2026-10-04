@@ -40,3 +40,34 @@ export function localBundleMetrics(candidates: readonly CorridorSummary[], ids: 
     lengthMeters: candidates.filter((candidate) => chosen.has(candidate.id)).reduce((sum, candidate) => sum + candidate.lengthMeters, 0),
   };
 }
+
+export interface ReviewReference {
+  projectId: string;
+  statusUrl: string;
+  planId: string | null;
+  candidateIds: string[];
+}
+export function recoveryReference(projectId: string, statusUrl: string, planId: string | null, candidateIds: readonly string[]): ReviewReference {
+  return { projectId, statusUrl, planId, candidateIds: [...candidateIds] };
+}
+export function canLockRoutes({ status, ids, evaluation }: { status: string; ids: readonly string[]; evaluation: { candidateIds: string[]; network: { lines: unknown[] } } | null }): boolean {
+  return status === "success" && !!evaluation && ids.length > 0 && evaluation.network.lines.length > 0 &&
+    ids.length === evaluation.candidateIds.length && ids.every((id) => evaluation.candidateIds.includes(id));
+}
+
+export function createPlannerUiState() {
+  return {
+    mode: "create" as const,
+    reviewTask: "plans" as const,
+    analysisTask: "overview" as const,
+    selected: { type: "network", id: "network" },
+    selectedPlanId: null as string | null,
+    candidateIds: [] as string[],
+    draftEvaluation: null as unknown,
+    evaluationStatus: "idle" as const,
+    evaluationError: null as string | null,
+  };
+}
+export function selectedDraft<T extends { id: string; candidateIds: string[] }>(plan: T) {
+  return { selectedPlanId: plan.id, candidateIds: [...plan.candidateIds], draftEvaluation: plan, evaluationStatus: "success" as const, evaluationError: null };
+}

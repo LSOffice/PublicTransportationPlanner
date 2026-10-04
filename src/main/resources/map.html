@@ -11,10 +11,31 @@
     <link rel="stylesheet" href="/planner.css" />
   </head>
   <body>
+    <div id="projectStart" class="start-screen" role="dialog" aria-modal="true" aria-labelledby="startTitle">
+      <div class="start-shell">
+        <header class="start-header"><strong>London Network Planner</strong><span>Local workspace</span></header>
+        <div class="start-content">
+          <section class="start-create">
+            <h1 id="startTitle">Open a planning project</h1>
+            <p>Create a new network or continue a project saved in this browser.</p>
+            <label for="startProjectName">New project name</label>
+            <input id="startProjectName" type="text" maxlength="80" value="Untitled London plan" autocomplete="off" />
+            <button id="startNewBtn" class="button primary" type="button">Create new project</button>
+            <button id="startImportBtn" class="button secondary" type="button">Import project JSON</button>
+          </section>
+          <section class="start-recent" aria-labelledby="startRecentTitle">
+            <div class="section-heading"><h2 id="startRecentTitle">Open existing</h2><span>Saved locally</span></div>
+            <div id="startProjectList" class="start-project-list" aria-live="polite"><p>Loading local projects…</p></div>
+          </section>
+        </div>
+        <p id="startProgress" class="start-progress" aria-live="polite">Choose a project to begin.</p>
+        <p id="startError" class="start-error is-hidden" role="alert"></p>
+      </div>
+    </div>
     <div class="desktop-gate" role="alert">
       <div>
-        <h1>Desktop workspace required</h1>
-        <p>This planning surface needs at least 1100 pixels of width to keep the map, evidence, and controls visible together.</p>
+        <h1>Wider screen required</h1>
+        <p>This planning surface needs at least 768 pixels of width. Open this planner on a tablet or desktop to draw and review routes.</p>
       </div>
     </div>
 
@@ -28,7 +49,7 @@
           <span class="sr-only">Current project</span>
           <select id="projectSelect" aria-label="Current project"></select>
         </label>
-        <span id="saveState" class="save-state" aria-live="polite">Preparing local workspace…</span>
+        <span id="saveState" class="save-state" aria-live="polite">Choose a project</span>
         <div class="bar-actions" aria-label="Project actions">
           <details class="project-menu"><summary class="button secondary">Project</summary><div class="project-menu-list">
             <button id="newProjectBtn" class="button secondary" type="button">New project</button>
@@ -52,41 +73,46 @@
             <button id="refineModeBtn" class="mode-button" role="tab" aria-selected="false" type="button" disabled>Refine</button>
             <button id="operateModeBtn" class="mode-button" role="tab" aria-selected="false" type="button" disabled>Analyse</button>
           </div>
-          <button id="hidePanelBtn" class="panel-visibility" type="button">Hide stage panel</button>
+          <button id="sheetPrimaryBtn" class="button primary sheet-primary is-hidden" type="button">Draw study area</button><button id="sheetToggle" class="panel-visibility" type="button" aria-expanded="true">Collapse panel</button><button id="hidePanelBtn" class="panel-visibility desktop-only" type="button">Hide panel</button>
 
           <div id="designPanel" class="panel-scroll">
             <section class="workflow-section stage-create">
               <div class="section-heading">
-                <h2>Automatic network</h2>
+                <h2>Create a network</h2>
                 <span id="studyAreaStatus" class="status-chip">No area</span>
               </div>
               <p class="help">Draw a supported London study area, then let the demand model propose an editable network.</p>
-              <button id="drawAreaBtn" class="button secondary full" type="button">Draw study area</button>
-              <div class="field-grid two">
+              <button id="drawAreaBtn" class="button primary full" type="button">Draw study area</button><p class="microcopy" id="areaSummary">Choose a supported area on the map.</p>
+              <details class="task-details"><summary>Generation details</summary><div class="field-grid two">
                 <label>Daily journeys<input id="dailyJourneysInput" type="number" min="1000" max="10000000" step="10000" value="500000" /></label>
                 <label>Decay (km)<input id="decayInput" type="number" min="0.5" max="100" step="0.5" value="8" /></label>
               </div>
               <label>Demand evidence<select id="demandMode"><option value="OBSERVED_BLEND">NUMBAT blend where available</option><option value="GRAVITY_ONLY">Simulated gravity only</option></select></label>
               <label>Guidance strength <output id="guidanceValue">0.08</output><input id="guidanceInput" type="range" min="0" max="0.20" step="0.01" value="0.08" /></label>
+              <div class="field-grid three"><label>Radial cap<input id="radialCap" type="number" min="0" max="16" value="3" /></label><label>Orbital cap<input id="orbitalCap" type="number" min="0" max="16" value="3" /></label><label>Core cap<input id="coreCap" type="number" min="0" max="16" value="3" /></label></div></details>
               <button id="generateBtn" class="button primary full" type="button" disabled>
                 <span>Generate network</span><span class="button-progress" aria-hidden="true"></span>
               </button>
-              <button id="cancelGenerationBtn" class="button secondary full is-hidden" type="button">Cancel search</button>
+              <button id="cancelGenerationBtn" class="button secondary full is-hidden" type="button">Cancel search</button><button id="drawLineBtn" class="button secondary full" type="button">Draw my own line</button>
             </section>
 
             <section class="workflow-section stage-create" aria-label="Search progress">
               <div class="section-heading"><h2>Search in progress</h2><span id="searchState" class="status-chip">Ready</span></div>
-              <div class="playback-controls"><button id="playSearchBtn" type="button">Play</button><button id="stepSearchBtn" type="button">Step</button><label>Speed<select id="searchSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option></select></label></div>
+              <details class="task-details"><summary>Search details</summary><div class="playback-controls"><button id="playSearchBtn" type="button">Play</button><button id="stepSearchBtn" type="button">Step</button><label>Speed<select id="searchSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option></select></label></div>
               <input id="searchScrub" type="range" min="0" max="0" value="0" aria-label="Search timeline position" />
-              <ol id="searchTimeline" class="event-timeline" aria-live="polite"><li>Draw an area to begin.</li></ol>
+              <ol id="searchTimeline" class="event-timeline" aria-live="polite"><li>Draw an area to begin.</li></ol></details>
             </section>
 
-            <section class="workflow-section stage-create" aria-label="Plan alternatives">
-              <div class="section-heading"><h2>Suggested plans</h2><span id="planCount" class="count">0</span></div>
-              <div id="planAlternatives" class="plan-alternatives"><p class="help">Plans appear as the search completes.</p></div>
+            <section class="workflow-section stage-review is-hidden" aria-label="Review routes">
+              <div class="section-heading"><h2>Review routes</h2><span id="planCount" class="count">0</span></div>
+              <p class="help">Choose a plan, adjust its corridors, then lock in the evaluated routes.</p>
+              <div class="review-tabs"><button id="reviewPlansBtn" class="button secondary is-active" type="button" aria-pressed="true">Suggested plans</button><button id="adjustRoutesBtn" class="button secondary" type="button" aria-pressed="false">Adjust routes</button></div>
+              <div id="reviewPlansView"><div id="planAlternatives" class="plan-alternatives"><p class="help">Plans appear as the search completes.</p></div></div>
+              <div id="reviewAdjustView" class="is-hidden"><p id="bundleMetrics" class="microcopy">Choose a plan to adjust its routes.</p><div class="section-heading"><h2>Candidate corridors</h2><span id="candidateCount" class="count">0</span></div><div id="candidateList" class="list"></div></div>
             </section>
-
-            <section class="workflow-section stage-refine">
+            <section id="selectionWorkspace" class="workflow-section stage-refine is-hidden"><div class="section-heading"><h2>Edit selection</h2><button id="backSelectionBtn" class="button secondary" type="button">Back to network</button></div></section>
+            <div id="refineWorkspace" class="stage-refine is-hidden">
+            <section class="workflow-section stage-refine is-hidden">
               <div class="section-heading"><h2>Manual line</h2><span class="status-chip neutral">Editable</span></div>
               <div class="field-grid">
                 <label>Planning role
@@ -104,24 +130,21 @@
                   </select>
                 </label>
               </div>
-              <button id="drawLineBtn" class="button secondary full" type="button">Draw line and stations</button>
+              <p class="microcopy">Use Draw my own line in Create, or add another line below.</p><button id="addLineBtn" class="button secondary full" type="button">Add line</button>
               <p class="microcopy">Click each station in order and double-click to finish. Nearby stations snap into a shared interchange.</p>
             </section>
 
-            <section class="workflow-section stage-refine">
-              <div class="section-heading"><h2>Candidate corridors</h2><span id="candidateCount" class="count">0</span></div>
-              <div class="field-grid three"><label>Radial cap<input id="radialCap" type="number" min="0" max="16" value="3" /></label><label>Orbital cap<input id="orbitalCap" type="number" min="0" max="16" value="3" /></label><label>Core cap<input id="coreCap" type="number" min="0" max="16" value="3" /></label></div>
-              <div id="candidateList" class="list"></div><p id="bundleMetrics" class="microcopy">Choose a plan to refine it.</p>
-            </section>
-
-            <section class="workflow-section line-register stage-refine">
+            <section class="workflow-section line-register stage-refine is-hidden">
               <div class="section-heading"><h2>Network register</h2><span id="lineCount" class="count">0 lines</span></div>
               <div id="lineList" class="list empty-list"><p>Generate or draw a line to begin.</p></div>
-              <button id="downloadSchematicBtn" class="button secondary full" type="button">Download schematic SVG</button>
+              <button id="downloadSchematicBtn" class="button secondary full" type="button">Download schematic SVG</button><button id="analyseNetworkBtn" class="button primary full" type="button">Analyse network</button>
             </section>
+            </div>
           </div>
+          <div id="mapNotice" class="map-notice" aria-live="polite">Loading supported London coverage…</div>
+          <div id="reviewAction" class="task-action is-hidden"><span id="reviewStatus" aria-live="polite">Choose routes to continue</span><button id="lockRoutesBtn" class="button primary full" type="button" disabled>Lock in routes</button></div>
 
-          <div id="operatePanel" class="panel-scroll is-hidden">
+          <div id="operatePanel" class="panel-scroll is-hidden"><section class="workflow-section"><div class="section-heading"><h2>Analyse network</h2><button id="backToRefineBtn" class="button secondary" type="button">Back to Refine</button></div><div id="overviewWorkspace"><div id="analysisOverview"></div><div id="coverageWorkspace"></div></div></section><div id="analysisTasks"></div><div id="journeyWorkspace" class="is-hidden">
             <section class="workflow-section">
               <div class="section-heading"><h2>Journey planner</h2><span class="status-chip neutral">Expected time</span></div>
               <label>From<select id="journeyFrom"></select></label>
@@ -134,7 +157,7 @@
               <button id="planJourneyBtn" class="button primary full" type="button">Plan journey</button>
             </section>
 
-            <section class="workflow-section">
+            </div><div id="operationsWorkspace" class="is-hidden"><section class="workflow-section">
               <div class="section-heading"><h2>Service levels</h2><span class="status-chip neutral">Headway model</span></div>
               <div id="frequencyControls" class="frequency-list empty-list"><p>Add a line to set service frequency.</p></div>
             </section>
@@ -168,39 +191,43 @@
                 <label>Speed<select id="simulationSpeed"><option value="1">1×</option><option value="5" selected>5×</option><option value="15">15×</option><option value="60">60×</option></select></label>
               </div>
             </section>
+            </div>
           </div>
         </aside>
 
         <section class="map-stage" aria-label="Network map">
           <div id="map" role="application" aria-label="Interactive London network map"></div>
           <canvas id="searchCanvas" class="search-canvas" aria-hidden="true"></canvas>
-          <button id="showPanelBtn" class="floating-visibility is-hidden" type="button">Show stage panel</button>
-          <button id="showInspectorBtn" class="floating-visibility inspector-return is-hidden" type="button">Show inspector</button>
-          <div class="map-rail" aria-label="Map tools">
-            <button id="fitMapBtn" class="map-tool" type="button" aria-label="Fit supported London" title="Fit supported London">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5"/></svg>
+          <div class="map-toolbar" role="toolbar" aria-label="Map controls">
+            <button id="showPanelBtn" class="map-toolbar-button is-hidden" type="button">Show panel</button>
+            <button id="fitMapBtn" class="map-toolbar-button" type="button" title="Fit supported London">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5"/></svg><span>Fit map</span>
             </button>
-            <button id="coverageToggle" class="map-tool is-active" type="button" aria-pressed="true" aria-label="Toggle coverage overlay" title="Toggle coverage overlay">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Zm6-3v15m6-12v15"/></svg>
+            <button id="zoomInBtn" class="map-toolbar-button icon-only" type="button" aria-label="Zoom in" title="Zoom in">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
             </button>
-            <button id="demandToggle" class="map-tool" type="button" aria-pressed="false" aria-label="Toggle demand flows" title="Toggle demand flows">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17c4-9 8-9 16 0M6 7h12M9 4 6 7l3 3m6-6 3 3-3 3"/></svg>
+            <button id="zoomOutBtn" class="map-toolbar-button icon-only" type="button" aria-label="Zoom out" title="Zoom out">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
             </button>
+            <details class="map-layers"><summary>Layers</summary><div class="map-layer-popover">
+              <div class="map-layer-actions"><button id="layerCoverageBtn" type="button" aria-pressed="true">Coverage overlay</button><button id="layerDemandBtn" type="button" aria-pressed="false">Demand flows</button></div>
+              <div class="map-legend" aria-label="Map legend">
+                <div><span class="key-line underground"></span>Underground</div>
+                <div><span class="key-line overground"></span>Overground</div>
+                <div><span class="key-area unsupported"></span>No supported data</div>
+                <div><span class="key-area ptal-gap"></span>Neutral PTAL fallback</div>
+              </div>
+            </div></details>
+            <button id="coverageToggle" class="is-active is-hidden" type="button" aria-pressed="true" aria-label="Toggle coverage overlay"></button>
+            <button id="demandToggle" class="is-hidden" type="button" aria-pressed="false" aria-label="Toggle demand flows"></button>
           </div>
-          <div class="map-key" aria-label="Map legend">
-            <div><span class="key-line underground"></span>Underground</div>
-            <div><span class="key-line overground"></span>Overground</div>
-            <div><span class="key-area unsupported"></span>No supported data</div>
-            <div><span class="key-area ptal-gap"></span>Neutral PTAL fallback</div>
-          </div>
-          <div id="mapNotice" class="map-notice" aria-live="polite">Loading supported London coverage…</div>
 
           <section id="analysisDrawer" class="analysis-drawer is-collapsed" aria-label="Visual analysis">
             <div class="drawer-tabs" role="tablist" aria-label="Analysis views">
               <button class="drawer-tab is-active" data-drawer="demand" role="tab" aria-selected="true" type="button">Demand</button>
-              <button class="drawer-tab" data-drawer="issues" role="tab" aria-selected="false" type="button">Issues <span id="issueBadge">0</span></button>
-              <button class="drawer-tab" data-drawer="journey" role="tab" aria-selected="false" type="button">Journey</button>
-              <button class="drawer-tab" data-drawer="simulation" role="tab" aria-selected="false" type="button">Simulation</button>
+              <button class="drawer-tab" data-drawer="issues" role="tab" aria-selected="false" type="button">Overview <span id="issueBadge">0</span></button>
+              <button class="drawer-tab" data-drawer="journey" role="tab" aria-selected="false" type="button">Journeys</button>
+              <button class="drawer-tab" data-drawer="simulation" role="tab" aria-selected="false" type="button">Operations</button>
               <button id="drawerToggle" class="drawer-toggle" type="button" aria-expanded="false">Open analysis</button>
             </div>
             <div class="drawer-content">

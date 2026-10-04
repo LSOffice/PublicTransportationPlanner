@@ -1,14 +1,15 @@
 # London Network Planner
 
-A local desktop workspace for proposing and testing hypothetical metro networks around Greater London. The map, network editor, synthetic demand analysis, journey routing, and disruption simulation run from one Kotlin application. Results are planning estimates, not live TfL conditions or engineering feasibility claims.
+A local desktop and tablet workspace for proposing and testing hypothetical metro networks around Greater London. The map, network editor, synthetic demand analysis, journey routing, and disruption simulation run from one Kotlin application. Results are planning estimates, not live TfL conditions or engineering feasibility claims.
 
 ## Workflow
 
-1. **Create:** draw a supported study area, choose NUMBAT blend or simulated gravity demand, set guidance strength, and start a streamed search. The timeline and map show candidate discovery; choose one of the nondominated plans. If fewer than five distinct plans exist, the result gives an insufficiency reason.
-2. **Refine:** toggle candidate corridors, adjust radial, orbital, and core soft caps, draw lines, edit stations and track, inspect local length feedback and server-evaluated metrics, or download a schematic SVG.
-3. **Analyse:** inspect simulated OD demand, issues, Dijkstra/A* journeys, service levels, disruptions, and train simulation.
+1. **Create:** draw a supported study area, choose NUMBAT blend or simulated gravity demand, set guidance strength, and start a streamed search. The timeline and map show candidate discovery; review the balanced recommendation and four alternatives. If fewer than five distinct plans exist, the result gives an insufficiency reason.
+2. **Review routes:** select a plan, adjust corridors by role, and inspect local length plus server-evaluated metrics. Lock in routes saves the evaluated network, settings, and corridor provenance in one revision. Leaving Review keeps the previously saved network.
+3. **Refine:** add lines, edit stations and track, inspect key metrics, or download a schematic SVG.
+4. **Analyse:** inspect simulated OD demand, issues, Dijkstra/A* journeys, service levels, disruptions, and train simulation.
 
-Stages unlock when a network exists; you can always return to earlier work. Hide the floating stage panel or inspector to see more of the map. Projects autosave to IndexedDB; the Project menu handles new, save, import, and export. JSON schema v2 records generation settings and corridor provenance. Existing v1 projects migrate when opened.
+Each launch opens a project start screen: create a named project, open one saved in this browser, or import JSON. Stages unlock when a network exists; you can always return to earlier work. The single task panel floats on desktop and becomes a collapsible bottom sheet on tablet. Projects autosave to IndexedDB; the Project menu handles new, save, import, and export. JSON schema v2 records generation settings and corridor provenance. Existing v1 projects migrate when opened.
 
 ## Architecture and run
 
@@ -22,7 +23,7 @@ Stages unlock when a network exists; you can always return to earlier work. Hide
 ./gradlew run
 ```
 
-Open the printed URL at a desktop width of at least 1100 px. No database or account is required.
+Open the printed URL at a width of at least 768 px. No database or account is required.
 
 ## API
 

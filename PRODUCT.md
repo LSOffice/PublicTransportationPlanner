@@ -8,7 +8,7 @@ web
 
 ## Users
 
-The primary user is a city planner working on a desktop around Greater London. They need to sketch, generate, compare, operate, and explain hypothetical metro networks without leaving the map workspace.
+The primary user is a city planner working on a desktop or tablet around Greater London. They need to sketch, generate, compare, operate, and explain hypothetical metro networks without leaving the map workspace.
 
 ## Product Purpose
 
@@ -20,7 +20,7 @@ The product exposes the planning model rather than hiding it: synthetic demand, 
 
 ## Operating Context
 
-Projects are single-user and local. Planners move through Create, Refine, and Analyse stages in one map workspace. Create streams candidate and plan search; Refine edits a chosen network; Analyse handles demand, journeys, service, issues, and disruptions. Project files must be portable between browsers through versioned JSON export and import.
+Projects are single-user and local. Every launch starts with a choice to create a project, open one saved in this browser, or import JSON. Planners then move through Create, Review routes, Refine, and Analyse stages in one map workspace. Create streams candidate and plan search; Review holds a visible draft until an authoritative evaluation enables Lock in routes; Refine edits the saved network; Analyse handles demand, journeys, service, issues, and disruptions. Project files must be portable between browsers through versioned JSON export and import.
 
 ## Capabilities and Constraints
 
@@ -32,7 +32,7 @@ Projects are single-user and local. Planners move through Create, Refine, and An
 - Dijkstra and A* must produce equivalent optimal journey costs and include expected wait and transfer time.
 - Weather disruptions apply only to overground track.
 - The application remains a Kotlin/JVM service with a TypeScript browser bundle and no database.
-- The planning workspace is desktop-only.
+- The planning workspace supports desktop and tablet widths from 768px; narrower screens show a minimum-width message.
 
 ## Evidence on Hand
 
