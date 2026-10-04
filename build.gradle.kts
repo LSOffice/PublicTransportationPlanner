@@ -32,9 +32,46 @@ application {
     mainClass.set("org.lsoffice.MainKt")
 }
 
+val npmCi by tasks.registering(Exec::class) {
+    commandLine("npm", "ci", "--no-audit", "--no-fund")
+    inputs.files("package.json", "package-lock.json")
+    outputs.dir("node_modules")
+}
+val npmTest by tasks.registering(Exec::class) {
+    dependsOn(npmCi)
+    commandLine("npm", "test")
+    inputs.dir("frontend")
+    inputs.files("package.json", "package-lock.json", "vitest.config.ts")
+}
+val npmBuild by tasks.registering(Exec::class) {
+    dependsOn(npmTest)
+    commandLine("npm", "run", "build")
+    inputs.dir("frontend")
+    inputs.files("package.json", "package-lock.json")
+    outputs.file("build/generated-resources/planner.js")
+}
+tasks.processResources {
+    dependsOn(npmBuild)
+    from("build/generated-resources")
+}
+
 tasks.test {
     useJUnitPlatform()
 }
 kotlin {
     jvmToolchain(23)
+}
+
+tasks.register<JavaExec>("aggregateNumbat") {
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("org.lsoffice.NumbatPreaggregateKt")
+    args("src/main/resources/from-to-data/derived/numbat-regional-2024.csv")
+}
+
+tasks.register<JavaExec>("calibrateNumbat") {
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("org.lsoffice.NumbatCalibrationKt")
+    args("calibration/numbat-2024.json")
 }

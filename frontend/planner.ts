@@ -1,3 +1,7 @@
+// @ts-nocheck
+import { migrateProject, localBundleMetrics, toggleCandidate } from "./planner-state";
+import { decodeGenerationEvent } from "./stream";
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -8,7 +12,14 @@ const state = {
   session: null,
   demandRecords: [],
   selected: { type: "network", id: "network" },
-  mode: "design",
+  mode: "create",
+  generation: null,
+  generationJob: null,
+  previewPlans: [],
+  candidateIds: [],
+  searchEvents: [],
+  playbackIndex: 0,
+  playbackTimer: null,
   activeDrawMode: null,
   history: [],
   future: [],
@@ -49,13 +60,26 @@ async function boot() {
     const lastId = localStorage.getItem("planner:lastProject");
     state.project = state.projects.find((project) => project.id === lastId) || state.projects[0];
   }
-  renderAll();
+  renderAll(); setMode("create");
   setNotice("Draw a study area or create a manual line. All demand shown by this tool is simulated.");
 }
 
 function bindEvents() {
-  $("#designModeBtn").addEventListener("click", () => setMode("design"));
-  $("#operateModeBtn").addEventListener("click", () => setMode("operate"));
+  $("#designModeBtn").addEventListener("click", () => setMode("create"));
+  $("#refineModeBtn").addEventListener("click", () => setMode("refine"));
+  $("#operateModeBtn").addEventListener("click", () => setMode("analyse"));
+  $("#hidePanelBtn").addEventListener("click", () => toggleSurface("workflow-panel", "showPanelBtn"));
+  $("#showPanelBtn").addEventListener("click", () => toggleSurface("workflow-panel", "showPanelBtn"));
+  $("#hideInspectorBtn").addEventListener("click", () => toggleSurface("inspector", "showInspectorBtn"));
+  $("#showInspectorBtn").addEventListener("click", () => toggleSurface("inspector", "showInspectorBtn"));
+  $("#cancelGenerationBtn").addEventListener("click", cancelGeneration);
+  $("#downloadSchematicBtn").addEventListener("click", downloadSchematic);
+  $("#guidanceInput").addEventListener("input", (event) => $("#guidanceValue").textContent = Number(event.target.value).toFixed(2));
+  $("#playSearchBtn").addEventListener("click", toggleSearchPlayback);
+  $("#stepSearchBtn").addEventListener("click", () => stepSearch(1));
+  $("#searchScrub").addEventListener("input", (event) => { state.playbackIndex = Number(event.target.value); drawSearchFrame(); });
+  map.on("move zoom resize", drawSearchFrame);
+  window.addEventListener("resize", drawSearchFrame);
   $("#drawAreaBtn").addEventListener("click", startStudyAreaDraw);
   $("#drawLineBtn").addEventListener("click", startLineDraw);
   $("#generateBtn").addEventListener("click", generateNetwork);
@@ -195,20 +219,184 @@ function addManualLine(project, points) {
 async function generateNetwork() {
   if (!state.project.studyArea) return;
   const button = $("#generateBtn");
-  button.disabled = true;
-  button.classList.add("is-loading");
-  setNotice("Generating corridors from population and PTAL-weighted demand…");
+  button.disabled = true; button.classList.add("is-loading");
+  state.generation = null; state.previewPlans = []; state.searchEvents = []; state.playbackIndex = 0;
+  $("#searchTimeline").innerHTML = "";
+  $("#cancelGenerationBtn").classList.remove("is-hidden");
+  $("#searchState").textContent = "Searching";
+  setNotice("Searching sparse corridors and plan alternatives…");
   try {
-    const result = await api("/api/v1/networks/generate", { method: "POST", body: { studyArea: state.project.studyArea, maxTrunkLines: 4 } });
-    commit("Generate network", (project) => { project.network = result.network; });
-    setNotice(`Generated ${result.network.lines.length} lines from ${result.selectedGridPoints.toLocaleString()} supported grid cells.`);
-    await analyseProject();
-  } catch (error) {
-    showError(error);
-  } finally {
+    const job = await api("/api/v1/generation/jobs", { method: "POST", body: { studyArea: state.project.studyArea, settings: generationSettings() } });
+    state.generationJob = job;
+    await followGeneration(job);
+  } catch (error) { showError(error); }
+  finally {
     button.classList.remove("is-loading");
     button.disabled = !state.project.studyArea;
+    $("#cancelGenerationBtn").classList.add("is-hidden");
   }
+}
+
+function generationSettings() {
+  return { guidanceStrength: Number($("#guidanceInput").value), radialSoftCap: Number($("#radialCap").value),
+    orbitalSoftCap: Number($("#orbitalCap").value), distributorSoftCap: Number($("#coreCap").value),
+    demandMode: $("#demandMode").value };
+}
+
+async function followGeneration(job) {
+  await new Promise((resolve, reject) => {
+    const source = new EventSource(job.eventsUrl);
+    const types = ["SEED_DISCOVERED", "BEAM_STEP", "BRANCH_PRUNED", "CORRIDOR_COMMITTED", "RESIDUAL_HEATMAP_UPDATED", "PLAN_FORMED", "SEARCH_REFINED", "COMPLETE", "FAILED"];
+    const onEvent = async (event) => {
+      const update = decodeGenerationEvent(event.data);
+      state.searchEvents.push(update);
+      if (update.type === "PLAN_FORMED" && update.plan) {
+        state.previewPlans.push(update.plan); renderPlans();
+      }
+      const entry = document.createElement("li"); entry.textContent = `${update.type.replaceAll("_", " ").toLowerCase()}: ${update.message}`;
+      $("#searchTimeline").append(entry);
+      $("#searchTimeline").scrollTop = $("#searchTimeline").scrollHeight;
+      $("#searchScrub").max = state.searchEvents.length;
+      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        state.playbackIndex = state.searchEvents.length; $("#searchScrub").value = String(state.playbackIndex); drawSearchFrame();
+      }
+      if (update.type === "COMPLETE" || update.type === "FAILED") {
+        source.close();
+        const status = await api(job.statusUrl);
+        state.generationJob = status;
+        if (status.state === "COMPLETE") {
+          state.generation = status.result;
+          renderPlans(); renderCandidates();
+          $("#searchState").textContent = "Complete";
+          setNotice(`${status.result.plans.length} plan alternatives from ${status.result.candidates.length} sparse corridors.`);
+        } else if (status.state === "CANCELLED") { $("#searchState").textContent = "Cancelled"; }
+        else { $("#searchState").textContent = "Failed"; reject(new Error(status.error || "Generation failed")); return; }
+        resolve();
+      }
+    };
+    types.forEach((type) => source.addEventListener(type, onEvent));
+    source.onerror = async () => {
+      source.close();
+      try {
+        const status = await api(job.statusUrl);
+        if (status.state === "COMPLETE") { state.generation = status.result; renderPlans(); renderCandidates(); resolve(); }
+        else if (status.state === "CANCELLED") resolve();
+        else reject(new Error(status.error || "Generation stream disconnected; retry generation."));
+      } catch (error) { reject(error); }
+    };
+  });
+}
+
+async function cancelGeneration() {
+  if (!state.generationJob) return;
+  await api(state.generationJob.statusUrl, { method: "DELETE" });
+  $("#searchState").textContent = "Cancelling";
+}
+
+function renderPlans() {
+  const result = state.generation || { plans: state.previewPlans };
+  $("#planCount").textContent = String(result?.plans.length || 0);
+  const root = $("#planAlternatives");
+  root.innerHTML = result?.plans.length ? result.plans.map((plan, index) => {
+    const m = plan.metrics;
+    const axes = [m.coverage, Math.max(0, 1 - m.costEstimate / 10e9), 1 - m.transferOverhead, 1 - m.duplication, m.connectivity];
+    const polygon = axes.map((value, i) => { const angle = -Math.PI / 2 + i * Math.PI * 2 / 5; return `${(50 + 38 * value * Math.cos(angle)).toFixed(1)},${(50 + 38 * value * Math.sin(angle)).toFixed(1)}`; }).join(" ");
+    return `<article class="plan-article"><button class="plan-option" data-plan="${index}" type="button" ${state.generation ? "" : "disabled"}><strong>${escapeHtml(titleCase(plan.profile))}</strong><span>${Math.round(m.coverage * 100)}% coverage</span><svg viewBox="0 0 100 100" role="img" aria-label="Five objective radar for ${escapeAttribute(plan.profile)}"><circle cx="50" cy="50" r="38" fill="none" stroke="#d6dde1"/><polygon points="${polygon}" fill="rgba(11,102,212,.18)" stroke="#0b66d4" stroke-width="2"/></svg><small>${plan.network.lines.length} lines · ${plan.id.startsWith("preview-") ? "Preview · refining" : plan.certified ? "Certified" : `Gap ≤ ${(100 * (plan.optimalityGap || 0)).toFixed(0)}%`}</small></button><table class="plan-metrics"><tbody><tr><th>Length</th><td>${formatKm(m.lengthMeters)}</td><th>Cost</th><td>£${(m.costEstimate / 1e9).toFixed(2)}bn</td></tr><tr><th>Transfer</th><td>${(m.transferOverhead * 100).toFixed(0)}%</td><th>Duplicate</th><td>${(m.duplication * 100).toFixed(0)}%</td></tr><tr><th>Connected</th><td>${(m.connectivity * 100).toFixed(0)}%</td><th>Guidance</th><td>${m.guidancePenalty.toFixed(2)}</td></tr></tbody></table></article>`;
+  }).join("") : '<p class="help">No viable plans. Expand the study area.</p>';
+  root.querySelectorAll("[data-plan]").forEach((button) => button.addEventListener("click", () => choosePlan(Number(button.dataset.plan))));
+  drawSearchFrame();
+}
+
+function choosePlan(index) {
+  const plan = state.generation?.plans[index]; if (!plan) return;
+  state.candidateIds = [...plan.candidateIds];
+  commit("Choose suggested plan", (project) => {
+    project.network = structuredClone(plan.network);
+    project.generationSettings = generationSettings();
+    project.corridorProvenance = Object.fromEntries(state.generation.candidates.map((item) => [item.id, item.provenance]));
+  });
+  setMode("refine"); renderCandidates();
+}
+
+function renderCandidates() {
+  const result = state.generation;
+  $("#candidateCount").textContent = String(result?.candidates.length || 0);
+  const root = $("#candidateList");
+  root.innerHTML = result?.candidates.map((candidate) => `<label class="candidate-row"><input type="checkbox" value="${escapeAttribute(candidate.id)}" ${state.candidateIds.includes(candidate.id) ? "checked" : ""} /><span>${escapeHtml(candidate.id)} · ${escapeHtml(roleLabel(candidate.role))}</span><small>${formatKm(candidate.lengthMeters)}</small></label>`).join("") || "<p>Generate candidates first.</p>";
+  root.querySelectorAll("input").forEach((input) => input.addEventListener("change", evaluateBundle));
+}
+
+let bundleTimer;
+let bundleSerial = 0;
+function evaluateBundle(event) {
+  const serial = ++bundleSerial;
+  state.candidateIds = toggleCandidate(state.candidateIds, event.target.value, event.target.checked);
+  const ids = state.candidateIds;
+  const local = localBundleMetrics(state.generation.candidates, ids);
+  $("#bundleMetrics").textContent = `${local.lineCount} lines · ${formatKm(local.lengthMeters)} selected length · evaluating…`;
+  clearTimeout(bundleTimer);
+  bundleTimer = setTimeout(async () => {
+    if (!ids.length) { $("#bundleMetrics").textContent = "Choose at least one corridor."; return; }
+    try {
+      const plan = await api(`${state.generationJob.statusUrl}/evaluate`, { method: "POST", body: { candidateIds: ids, settings: generationSettings() } });
+      if (serial !== bundleSerial) return;
+      $("#bundleMetrics").textContent = `${Math.round(plan.metrics.coverage * 100)}% coverage · ${formatKm(plan.metrics.lengthMeters)} · £${(plan.metrics.costEstimate / 1e9).toFixed(1)}bn · ${(plan.metrics.duplication * 100).toFixed(0)}% duplicated`;
+      commit("Refine candidate bundle", (project) => { project.network = plan.network; project.generationSettings = generationSettings(); }, { analyse: false });
+    } catch (error) { showError(error); }
+  }, 350);
+}
+
+function downloadSchematic() {
+  const lines = state.project.network.lines;
+  if (!lines.length) return;
+  const byId = new Map(state.project.network.stations.map((station) => [station.id, station]));
+  const rowHeight = 42;
+  const width = 1120; const height = 95 + lines.reduce((sum, line) => sum + Math.max(1, line.stationIds.length) * rowHeight + 70, 0);
+  let y = 54;
+  const body = lines.map((line) => {
+    const names = line.stationIds.map((id) => byId.get(id)?.name || id);
+    const routeName = names[0] === names[names.length - 1] ? `${names[0]} Line` : `${names[0]}–${names[names.length - 1]} Line`;
+    const start = y; y += names.length * rowHeight + 70;
+    const color = safeColor(line.color);
+    const stops = names.map((name, index) => {
+      const sy = start + 42 + index * rowHeight;
+      const interchange = lines.filter((other) => other.stationIds.includes(line.stationIds[index])).length > 1;
+      return `<circle cx="110" cy="${sy}" r="${interchange ? 9 : 6}" fill="white" stroke="${color}" stroke-width="3"/><text x="138" y="${sy + 5}" font-size="16" fill="#17202b">${escapeHtml(name)}${interchange ? " · interchange" : ""}</text>`;
+    }).join("");
+    return `<g><text x="60" y="${start}" font-size="23" font-weight="700" fill="${color}">${escapeHtml(routeName)}</text><text x="700" y="${start}" font-size="14" fill="#52606d">${escapeHtml(roleLabel(line.role))} · ${line.trainsPerHour} tph</text><path d="M110 ${start + 42} V${start + 42 + (names.length - 1) * rowHeight}" stroke="${color}" stroke-width="9" fill="none"/>${stops}</g>`;
+  }).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}"><rect width="100%" height="100%" fill="white"/><text x="60" y="36" font-family="sans-serif" font-size="14" fill="#52606d">${escapeHtml(state.project.name)} · schematic planning view · simulated service</text><g font-family="sans-serif">${body}</g></svg>`;
+  downloadBlob(`${slugify(state.project.name)}-schematic.svg`, svg, "image/svg+xml");
+}
+
+function toggleSurface(className, returnButtonId) {
+  const surface = document.querySelector(`.${className}`);
+  const collapsed = surface.classList.toggle("is-collapsed");
+  document.querySelector(".workspace").classList.toggle(className === "workflow-panel" ? "panel-hidden" : "inspector-hidden", collapsed);
+  $(`#${returnButtonId}`).classList.toggle("is-hidden", !collapsed);
+  setTimeout(() => map.invalidateSize(), 0);
+}
+
+function toggleSearchPlayback() {
+  if (state.playbackTimer) { clearInterval(state.playbackTimer); state.playbackTimer = null; $("#playSearchBtn").textContent = "Play"; return; }
+  state.playbackIndex = 0; $("#playSearchBtn").textContent = "Pause";
+  state.playbackTimer = setInterval(() => {
+    stepSearch(1);
+    if (state.playbackIndex >= state.searchEvents.length) toggleSearchPlayback();
+  }, 400 / Number($("#searchSpeed").value));
+}
+function stepSearch(amount) { state.playbackIndex = Math.min(state.searchEvents.length, state.playbackIndex + amount); $("#searchScrub").value = String(state.playbackIndex); drawSearchFrame(); }
+function drawSearchFrame() {
+  const canvas = $("#searchCanvas"); const rect = canvas.getBoundingClientRect(); const scale = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * scale)); canvas.height = Math.max(1, Math.round(rect.height * scale));
+  const context = canvas.getContext("2d"); context.scale(scale, scale);
+  const candidates = state.generation?.candidates || [];
+  const visible = state.searchEvents.slice(0, state.playbackIndex).filter((event) => event.type === "SEED_DISCOVERED").length;
+  candidates.slice(0, visible).forEach((candidate, index) => {
+    context.beginPath(); candidate.coordinates.forEach((point, i) => { const pos = map.latLngToContainerPoint([point.lat, point.lon]); if (i) context.lineTo(pos.x, pos.y); else context.moveTo(pos.x, pos.y); });
+    context.strokeStyle = index < state.project.network.lines.length ? "rgba(11,102,212,.7)" : "rgba(184,102,8,.35)";
+    context.lineWidth = index < state.project.network.lines.length ? 4 : 2; context.stroke();
+  });
 }
 
 function updateDemandConfig() {
@@ -266,9 +454,18 @@ function renderAll() {
   renderHistoryState();
   $("#dailyJourneysInput").value = state.project.demandConfig.totalDailyJourneys;
   $("#decayInput").value = state.project.demandConfig.distanceDecayKm;
+  const settings = state.project.generationSettings || {};
+  if (settings.guidanceStrength !== undefined) { $("#guidanceInput").value = settings.guidanceStrength; $("#guidanceValue").textContent = Number(settings.guidanceStrength).toFixed(2); }
+  if (settings.demandMode) $("#demandMode").value = settings.demandMode;
+  if (settings.radialSoftCap !== undefined) $("#radialCap").value = settings.radialSoftCap;
+  if (settings.orbitalSoftCap !== undefined) $("#orbitalCap").value = settings.orbitalSoftCap;
+  if (settings.distributorSoftCap !== undefined) $("#coreCap").value = settings.distributorSoftCap;
   $("#studyAreaStatus").textContent = state.project.studyArea ? "Area ready" : "No area";
   $("#studyAreaStatus").className = `status-chip ${state.project.studyArea ? "success" : ""}`;
   $("#generateBtn").disabled = !state.project.studyArea;
+  $("#refineModeBtn").disabled = !state.project.network.lines.length;
+  $("#operateModeBtn").disabled = !state.project.network.lines.length;
+  if (!state.project.network.lines.length && state.mode !== "create") setMode("create");
 }
 
 function renderStudyArea() {
@@ -311,7 +508,7 @@ function renderNetwork() {
       className: "", iconSize: lineUse.get(station.id) > 1 ? [18, 18] : [14, 14],
       html: `<div class="planner-station ${lineUse.get(station.id) > 1 ? "interchange" : ""} ${selected ? "is-selected" : ""} ${closed ? "is-closed" : ""}"></div>`,
     });
-    const marker = L.marker([station.lat, station.lon], { icon, draggable: state.mode === "design", keyboard: true }).addTo(networkLayer);
+    const marker = L.marker([station.lat, station.lon], { icon, draggable: state.mode === "refine", keyboard: true }).addTo(networkLayer);
     marker.bindTooltip(escapeHtml(station.name), { className: "station-tooltip", direction: "top" });
     marker.on("click", () => selectObject("station", station.id));
     marker.on("dragend", () => moveStation(station.id, marker));
@@ -644,15 +841,20 @@ function renderSimulationSummary() {
 }
 
 function setMode(mode) {
+  if (mode === "refine" && !state.project.network.lines.length) return;
+  if (mode === "analyse" && !state.project.network.lines.length) return;
   state.mode = mode;
-  $("#designModeBtn").classList.toggle("is-active", mode === "design");
-  $("#operateModeBtn").classList.toggle("is-active", mode === "operate");
-  $("#designModeBtn").setAttribute("aria-selected", String(mode === "design"));
-  $("#operateModeBtn").setAttribute("aria-selected", String(mode === "operate"));
-  $("#designPanel").classList.toggle("is-hidden", mode !== "design");
-  $("#operatePanel").classList.toggle("is-hidden", mode !== "operate");
+  [["designModeBtn", "create"], ["refineModeBtn", "refine"], ["operateModeBtn", "analyse"]].forEach(([id, value]) => {
+    $(`#${id}`).classList.toggle("is-active", mode === value);
+    $(`#${id}`).setAttribute("aria-selected", String(mode === value));
+  });
+  $("#designPanel").classList.toggle("is-hidden", mode === "analyse");
+  $("#operatePanel").classList.toggle("is-hidden", mode !== "analyse");
+  $$(".stage-create").forEach((item) => item.classList.toggle("is-hidden", mode !== "create"));
+  $$(".stage-refine").forEach((item) => item.classList.toggle("is-hidden", mode !== "refine"));
   renderNetwork();
-  if (mode === "operate" && state.project.network.lines.length && !state.session) analyseProject();
+  if (mode === "analyse" && !state.session) analyseProject();
+  if (mode === "analyse") selectDrawer("demand", true);
 }
 
 function toggleDrawer() {
@@ -675,12 +877,13 @@ async function newProject() {
   const number = state.projects.length + 1;
   state.project = createProject(`Untitled London plan ${number}`);
   state.session = null; state.history = []; state.future = [];
+  state.generation = null; state.generationJob = null; state.previewPlans = []; state.candidateIds = []; setMode("create");
   await persistProject(true); renderAll(); fitSupportedLondon();
 }
 
 function createProject(name) {
   const timestamp = new Date().toISOString();
-  return { schemaVersion: 1, id: crypto.randomUUID(), name, revision: 0, createdAt: timestamp, updatedAt: timestamp, studyArea: null,
+  return { schemaVersion: 2, id: crypto.randomUUID(), name, revision: 0, createdAt: timestamp, updatedAt: timestamp, studyArea: null, generationSettings: { guidanceStrength: .08, radialSoftCap: 3, orbitalSoftCap: 3, distributorSoftCap: 3, demandMode: "OBSERVED_BLEND" }, corridorProvenance: {},
     demandConfig: { totalDailyJourneys: 500000, distanceDecayKm: 8, maxZones: 400, ptalInfluence: .25, modelVersion: "gravity-ipf-v1" },
     modelSettings: { stationCatchmentMeters: 800, undergroundSpeedKph: 40, overgroundSpeedKph: 45, dwellMinutes: .5, transferWalkMinutes: 3, surfaceReferenceSpeedKph: 20, peakHourShare: .1 },
     network: { stations: [], lines: [] }, disruptions: [] };
@@ -688,7 +891,7 @@ function createProject(name) {
 
 async function loadProjectRegister() {
   const db = await dbPromise;
-  state.projects = await transactionRequest(db, "projects", "readonly", (store) => store.getAll());
+  state.projects = (await transactionRequest(db, "projects", "readonly", (store) => store.getAll())).map(migrateProject);
   state.projects.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -717,7 +920,7 @@ function renderProjectPicker() {
 async function loadSelectedProject(event) {
   const project = state.projects.find((item) => item.id === event.target.value);
   if (!project) return;
-  state.project = structuredClone(project); state.session = null; state.history = []; state.future = []; state.selected = { type: "network", id: "network" };
+  state.project = migrateProject(structuredClone(project)); state.session = null; state.generation = null; state.previewPlans = []; state.candidateIds = []; state.history = []; state.future = []; state.selected = { type: "network", id: "network" };
   localStorage.setItem("planner:lastProject", project.id); renderAll();
   if (project.studyArea) map.fitBounds(project.studyArea.coordinates.map((point) => [point.lat, point.lon]), { padding: [30, 30] });
 }
@@ -727,10 +930,11 @@ async function importProject(event) {
   const file = event.target.files[0]; event.target.value = ""; if (!file) return;
   try {
     const project = JSON.parse(await file.text());
-    if (project.schemaVersion !== 1 || !project.id || !project.network) throw new Error("This is not a supported PlannerProjectV1 file.");
+    if (![1, 2].includes(project.schemaVersion) || !project.id || !project.network) throw new Error("This is not a supported planner project file.");
+    Object.assign(project, migrateProject(project));
     project.id = crypto.randomUUID(); project.name = `${project.name || "Imported plan"} (imported)`; project.revision = 0;
     project.createdAt = new Date().toISOString(); project.updatedAt = project.createdAt;
-    state.project = project; state.session = null; state.history = []; state.future = [];
+    state.project = project; state.session = null; state.generation = null; state.previewPlans = []; state.candidateIds = []; state.history = []; state.future = [];
     await persistProject(true); renderAll();
   } catch (error) { showError(error); }
 }

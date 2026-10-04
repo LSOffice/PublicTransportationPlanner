@@ -30,10 +30,12 @@
         </label>
         <span id="saveState" class="save-state" aria-live="polite">Preparing local workspace…</span>
         <div class="bar-actions" aria-label="Project actions">
-          <button id="newProjectBtn" class="button secondary" type="button">New</button>
-          <button id="saveProjectBtn" class="button secondary" type="button">Save</button>
-          <button id="importProjectBtn" class="button secondary" type="button">Import</button>
-          <button id="exportProjectBtn" class="button secondary" type="button">Export</button>
+          <details class="project-menu"><summary class="button secondary">Project</summary><div class="project-menu-list">
+            <button id="newProjectBtn" class="button secondary" type="button">New project</button>
+            <button id="saveProjectBtn" class="button secondary" type="button">Save now</button>
+            <button id="importProjectBtn" class="button secondary" type="button">Import JSON</button>
+            <button id="exportProjectBtn" class="button secondary" type="button">Export JSON</button>
+          </div></details>
           <button id="undoBtn" class="icon-button" type="button" aria-label="Undo" title="Undo" disabled>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5M5 12h8a6 6 0 0 1 6 6"/></svg>
           </button>
@@ -45,13 +47,15 @@
 
       <section class="workspace" aria-label="Metro planning workspace">
         <aside class="workflow-panel" aria-label="Planning workflow">
-          <div class="mode-switch" role="tablist" aria-label="Workspace mode">
-            <button id="designModeBtn" class="mode-button is-active" role="tab" aria-selected="true" type="button">Design</button>
-            <button id="operateModeBtn" class="mode-button" role="tab" aria-selected="false" type="button">Operate</button>
+          <div class="mode-switch" role="tablist" aria-label="Planning stage">
+            <button id="designModeBtn" class="mode-button is-active" role="tab" aria-selected="true" type="button">Create</button>
+            <button id="refineModeBtn" class="mode-button" role="tab" aria-selected="false" type="button" disabled>Refine</button>
+            <button id="operateModeBtn" class="mode-button" role="tab" aria-selected="false" type="button" disabled>Analyse</button>
           </div>
+          <button id="hidePanelBtn" class="panel-visibility" type="button">Hide stage panel</button>
 
           <div id="designPanel" class="panel-scroll">
-            <section class="workflow-section">
+            <section class="workflow-section stage-create">
               <div class="section-heading">
                 <h2>Automatic network</h2>
                 <span id="studyAreaStatus" class="status-chip">No area</span>
@@ -62,12 +66,27 @@
                 <label>Daily journeys<input id="dailyJourneysInput" type="number" min="1000" max="10000000" step="10000" value="500000" /></label>
                 <label>Decay (km)<input id="decayInput" type="number" min="0.5" max="100" step="0.5" value="8" /></label>
               </div>
+              <label>Demand evidence<select id="demandMode"><option value="OBSERVED_BLEND">NUMBAT blend where available</option><option value="GRAVITY_ONLY">Simulated gravity only</option></select></label>
+              <label>Guidance strength <output id="guidanceValue">0.08</output><input id="guidanceInput" type="range" min="0" max="0.20" step="0.01" value="0.08" /></label>
               <button id="generateBtn" class="button primary full" type="button" disabled>
                 <span>Generate network</span><span class="button-progress" aria-hidden="true"></span>
               </button>
+              <button id="cancelGenerationBtn" class="button secondary full is-hidden" type="button">Cancel search</button>
             </section>
 
-            <section class="workflow-section">
+            <section class="workflow-section stage-create" aria-label="Search progress">
+              <div class="section-heading"><h2>Search in progress</h2><span id="searchState" class="status-chip">Ready</span></div>
+              <div class="playback-controls"><button id="playSearchBtn" type="button">Play</button><button id="stepSearchBtn" type="button">Step</button><label>Speed<select id="searchSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option></select></label></div>
+              <input id="searchScrub" type="range" min="0" max="0" value="0" aria-label="Search timeline position" />
+              <ol id="searchTimeline" class="event-timeline" aria-live="polite"><li>Draw an area to begin.</li></ol>
+            </section>
+
+            <section class="workflow-section stage-create" aria-label="Plan alternatives">
+              <div class="section-heading"><h2>Suggested plans</h2><span id="planCount" class="count">0</span></div>
+              <div id="planAlternatives" class="plan-alternatives"><p class="help">Plans appear as the search completes.</p></div>
+            </section>
+
+            <section class="workflow-section stage-refine">
               <div class="section-heading"><h2>Manual line</h2><span class="status-chip neutral">Editable</span></div>
               <div class="field-grid">
                 <label>Planning role
@@ -89,9 +108,16 @@
               <p class="microcopy">Click each station in order and double-click to finish. Nearby stations snap into a shared interchange.</p>
             </section>
 
-            <section class="workflow-section line-register">
+            <section class="workflow-section stage-refine">
+              <div class="section-heading"><h2>Candidate corridors</h2><span id="candidateCount" class="count">0</span></div>
+              <div class="field-grid three"><label>Radial cap<input id="radialCap" type="number" min="0" max="16" value="3" /></label><label>Orbital cap<input id="orbitalCap" type="number" min="0" max="16" value="3" /></label><label>Core cap<input id="coreCap" type="number" min="0" max="16" value="3" /></label></div>
+              <div id="candidateList" class="list"></div><p id="bundleMetrics" class="microcopy">Choose a plan to refine it.</p>
+            </section>
+
+            <section class="workflow-section line-register stage-refine">
               <div class="section-heading"><h2>Network register</h2><span id="lineCount" class="count">0 lines</span></div>
               <div id="lineList" class="list empty-list"><p>Generate or draw a line to begin.</p></div>
+              <button id="downloadSchematicBtn" class="button secondary full" type="button">Download schematic SVG</button>
             </section>
           </div>
 
@@ -147,6 +173,9 @@
 
         <section class="map-stage" aria-label="Network map">
           <div id="map" role="application" aria-label="Interactive London network map"></div>
+          <canvas id="searchCanvas" class="search-canvas" aria-hidden="true"></canvas>
+          <button id="showPanelBtn" class="floating-visibility is-hidden" type="button">Show stage panel</button>
+          <button id="showInspectorBtn" class="floating-visibility inspector-return is-hidden" type="button">Show inspector</button>
           <div class="map-rail" aria-label="Map tools">
             <button id="fitMapBtn" class="map-tool" type="button" aria-label="Fit supported London" title="Fit supported London">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5"/></svg>
@@ -195,6 +224,7 @@
         </section>
 
         <aside class="inspector" aria-label="Selection inspector">
+          <button id="hideInspectorBtn" class="panel-visibility" type="button">Hide inspector</button>
           <div class="inspector-head">
             <div><span class="metric-label">Network score</span><strong id="scoreTotal" class="score-total">—</strong></div>
             <span id="analysisState" class="status-chip neutral">Not analysed</span>
