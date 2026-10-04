@@ -71,6 +71,7 @@ class PlannerService(
         }
     private val coverageAsset: CoverageAsset by lazy { loadCoverageAsset() }
     private val londonPopulationPoints: List<GridPoint> by lazy { loadLondonPopulationPoints() }
+    private val observedRegionDemand: RegionDemandModel? by lazy { NumbatDemandLoader.loadFromResources() }
 
     fun coverage(): CoverageResponse {
         val polygons = coverageAsset.polygons
@@ -118,42 +119,52 @@ class PlannerService(
     }
 
     fun generateNetwork(request: GenerateNetworkRequest): GenerateNetworkResponse {
-        validateStudyArea(request.studyArea)
-        val points = londonPopulationPoints.filter { pointInPolygon(it.lon, it.lat, request.studyArea.coordinates) }
-        if (points.size < 3) throw PlannerValidationException("The study area contains too few population-grid cells")
-        val enriched =
-            points.map { point ->
-                val multiplier = PtalLookup.demandWeight(point.lon, point.lat)
-                point.copy(value = point.value * multiplier)
-            }
-        val builder =
-            MetroBuilder(
-                params = BuilderParams(1_000_000_000.0, 50_000_000.0),
-                debug = false,
-            )
-        val generated =
-            builder.buildNaturalNetworkFromGrid(
-                gridPoints = enriched,
-                minStationValue = 0.0,
-                maxTrunkLines = request.maxTrunkLines.coerceIn(1, 8),
-                minCorridorLengthMeters = 2_000.0,
-                minStationsPerLine = 3,
-            )
-        if (generated.isEmpty()) {
-            throw PlannerValidationException(
-                "Automatic generation produced no viable lines. Draw a larger area or include more populated cells.",
-                "NO_VIABLE_NETWORK",
-            )
-        }
+        val result = generatePareto(GenerationRequest(request.studyArea, GenerationSettings(radialSoftCap = request.maxTrunkLines.coerceIn(0, 8))))
+        val balanced = result.plans.firstOrNull { it.profile == "balanced" } ?: result.plans.firstOrNull()
+            ?: throw PlannerValidationException(result.insufficientFrontierReason ?: "No viable network", "NO_VIABLE_NETWORK")
         return GenerateNetworkResponse(
-            network = convertGeneratedNetwork(generated),
-            selectedGridPoints = points.size,
+            network = balanced.network,
+            selectedGridPoints = result.selectedGridPoints,
             warnings =
                 listOf(
                     "Infrastructure labels are a density-based planning assumption and remain editable.",
-                    "Demand values are synthetic planning proxies.",
+                    "Demand evidence: ${result.demandEvidence}. Unmatched demand uses a gravity fallback.",
                 ),
         )
+    }
+
+    fun generatePareto(
+        request: GenerationRequest,
+        onEvent: (String, String) -> Unit = { _, _ -> },
+        cancelled: () -> Boolean = { false },
+        refinementBudgetMillis: Long = 1_500,
+        onPreview: (GenerationPlan) -> Unit = {},
+    ): GenerationResult {
+        validateGenerationRequest(request)
+        val points = londonPopulationPoints.filter { pointInPolygon(it.lon, it.lat, request.studyArea.coordinates) }
+        if (points.size < 3) throw PlannerValidationException("The study area contains too few population-grid cells")
+        val enriched = points.map { it.copy(value = it.value * PtalLookup.demandWeight(it.lon, it.lat)) }
+        val observed = if (request.settings.demandMode == "GRAVITY_ONLY") null else observedRegionDemand
+        return SparseParetoGenerator().generate(enriched, request.settings, observed, onEvent, cancelled, refinementBudgetMillis, onPreview)
+    }
+
+    fun validateGenerationRequest(request: GenerationRequest) {
+        validateStudyArea(request.studyArea)
+        val settings = request.settings
+        if (settings.guidanceStrength !in 0.0..0.20 || settings.radialSoftCap !in 0..16 ||
+            settings.orbitalSoftCap !in 0..16 || settings.distributorSoftCap !in 0..16 ||
+            settings.demandMode !in setOf("OBSERVED_BLEND", "GRAVITY_ONLY")) {
+            throw PlannerValidationException("Invalid generation settings")
+        }
+    }
+
+    fun evaluatePareto(request: GenerationRequest, bundle: EvaluateBundleRequest): GenerationPlan {
+        validateGenerationRequest(request)
+        validateGenerationRequest(request.copy(settings = bundle.settings))
+        val points = londonPopulationPoints.filter { pointInPolygon(it.lon, it.lat, request.studyArea.coordinates) }
+            .map { it.copy(value = it.value * PtalLookup.demandWeight(it.lon, it.lat)) }
+        val observed = if (request.settings.demandMode == "GRAVITY_ONLY") null else observedRegionDemand
+        return SparseParetoGenerator().evaluate(points, bundle.candidateIds, bundle.settings, observed)
     }
 
     fun createSession(request: AnalysisSessionRequest): AnalysisSessionResponse {
@@ -682,7 +693,7 @@ class PlannerService(
     }
 
     private fun validateProject(project: PlannerProject) {
-        if (project.schemaVersion != 1) throw PlannerValidationException("Unsupported project schema ${project.schemaVersion}")
+        if (project.schemaVersion !in 1..2) throw PlannerValidationException("Unsupported project schema ${project.schemaVersion}")
         project.studyArea?.let(::validateStudyArea)
         val stationIds = project.network.stations.map { it.id }
         if (stationIds.size != stationIds.distinct().size) throw PlannerValidationException("Station IDs must be unique")

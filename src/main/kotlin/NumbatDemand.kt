@@ -48,6 +48,7 @@ class RegionDemandModel(
     private val demandByPair: Map<RegionDemandPair, Double>,
     val stats: RegionDemandStats,
 ) {
+    internal fun entries(): Map<RegionDemandPair, Double> = demandByPair
     val maxDemand: Double = demandByPair.values.maxOrNull() ?: 0.0
     val pairCount: Int = demandByPair.size
 
@@ -107,7 +108,30 @@ object NumbatDemandLoader {
             WeightedResource("/from-to-data/raw/NBT24SUN5d_od_network_tb_lf_o.csv", 1.0),
         )
 
-    fun loadFromResources(): RegionDemandModel? =
+    fun loadFromResources(): RegionDemandModel? = loadCompactFromResources() ?: loadRawFromResources()
+
+    private fun loadCompactFromResources(): RegionDemandModel? {
+        val stream = NumbatDemandLoader::class.java.getResourceAsStream("/from-to-data/derived/numbat-regional-2024.csv")
+            ?: return null
+        return stream.bufferedReader().use { reader ->
+            reader.readLine()
+            val pairs = mutableMapOf<RegionDemandPair, Double>()
+            reader.forEachLine { line ->
+                val parts = line.split(',')
+                if (parts.size == 5) {
+                    val numbers = parts.map { it.toDoubleOrNull() }
+                    if (numbers.all { it != null }) {
+                        val pair = RegionDemandPair.unordered(RegionCell(numbers[0]!!.toInt(), numbers[1]!!.toInt()),
+                            RegionCell(numbers[2]!!.toInt(), numbers[3]!!.toInt()))
+                        pairs[pair] = numbers[4]!!
+                    }
+                }
+            }
+            RegionDemandModel(pairs, RegionDemandStats(0, 0, 0, 0, pairs.size, pairs.values.sum()))
+        }
+    }
+
+    fun loadRawFromResources(): RegionDemandModel? =
         try {
             val stationStream =
                 NumbatDemandLoader::class.java.getResourceAsStream("/from-to-data/derived/numbat-stations-2024.csv")

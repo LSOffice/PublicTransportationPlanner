@@ -57,6 +57,16 @@ data class PlannerLine(
     val vehicleCapacity: Int = 850,
     val stationIds: List<String>,
     val segments: List<PlannerSegment>,
+    val buildEstimate: PlannerBuildEstimate? = null,
+)
+
+@Serializable
+data class PlannerBuildEstimate(
+    val totalCost: Double,
+    val deepBoreMeters: Double,
+    val subsurfaceMeters: Double,
+    val surfaceOrElevatedMeters: Double,
+    val recommendation: String,
 )
 
 @Serializable
@@ -107,13 +117,15 @@ enum class DisruptionType {
 
 @Serializable
 data class PlannerProject(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = 2,
     val id: String,
     val name: String,
     val revision: Long,
     val createdAt: String,
     val updatedAt: String,
     val studyArea: StudyArea? = null,
+    val generationSettings: GenerationSettings = GenerationSettings(),
+    val corridorProvenance: Map<String, String> = emptyMap(),
     val demandConfig: DemandConfig = DemandConfig(),
     val modelSettings: ModelSettings = ModelSettings(),
     val network: PlannerNetwork = PlannerNetwork(),
@@ -142,7 +154,7 @@ data class CoverageResponse(
 @Serializable
 data class GenerateNetworkRequest(
     val studyArea: StudyArea,
-    val maxTrunkLines: Int = 4,
+    val maxTrunkLines: Int = 3,
 )
 
 @Serializable

@@ -20,9 +20,16 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import io.ktor.server.sse.SSE
+import io.ktor.sse.ServerSentEvent
+import io.ktor.server.sse.heartbeat
+import io.ktor.server.sse.sse
+import kotlinx.coroutines.delay
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -67,8 +74,10 @@ fun main() {
 }
 
 fun Application.plannerModule(service: PlannerService = PlannerService(plannerJson)) {
+    val jobs = GenerationJobs(service)
     install(ContentNegotiation) { json(plannerJson) }
     install(Compression) { gzip() }
+    install(SSE)
     install(StatusPages) {
         exception<PlannerValidationException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest, ApiError(cause.code, cause.message ?: "Invalid request"))
@@ -89,6 +98,32 @@ fun Application.plannerModule(service: PlannerService = PlannerService(plannerJs
         route("/api/v1") {
             get("/coverage") { call.respond(service.coverage()) }
             post("/networks/generate") { call.respond(service.generateNetwork(call.receive())) }
+            post("/generation/jobs") { call.respond(HttpStatusCode.Accepted, jobs.create(call.receive())) }
+            get("/generation/jobs/{id}") {
+                call.respond(jobs.status(call.parameters["id"] ?: throw PlannerValidationException("Missing job ID")))
+            }
+            delete("/generation/jobs/{id}") {
+                call.respond(jobs.cancel(call.parameters["id"] ?: throw PlannerValidationException("Missing job ID")))
+            }
+            post("/generation/jobs/{id}/evaluate") {
+                call.respond(jobs.evaluate(call.parameters["id"] ?: throw PlannerValidationException("Missing job ID"), call.receive()))
+            }
+            sse("/generation/jobs/{id}/events") {
+                val id = call.parameters["id"] ?: throw PlannerValidationException("Missing job ID")
+                var last = call.request.headers["Last-Event-ID"]?.toLongOrNull()
+                    ?: call.request.queryParameters["after"]?.toLongOrNull() ?: 0L
+                heartbeat { period = kotlin.time.Duration.parse("15s") }
+                while (true) {
+                    val events = jobs.eventsSince(id, last)
+                    for (event in events) {
+                        send(ServerSentEvent(data = plannerJson.encodeToString(event), event = event.type, id = event.id.toString()))
+                        last = event.id
+                    }
+                    val state = jobs.status(id).state
+                    if (state in setOf("COMPLETE", "FAILED", "CANCELLED") && events.isEmpty()) break
+                    delay(100)
+                }
+            }
             post("/analysis/sessions") { call.respond(HttpStatusCode.Created, service.createSession(call.receive())) }
             get("/analysis/sessions/{id}/demand") {
                 val id = call.parameters["id"] ?: throw PlannerValidationException("Missing session ID")

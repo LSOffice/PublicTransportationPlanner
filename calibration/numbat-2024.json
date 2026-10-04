@@ -1,0 +1,98 @@
+{
+    "algorithmVersion": "sparse-pareto-v1-preview-sweep",
+    "datasetSha256": "3d2c71f5e9ea85acb15a993711aecaaa93607cae06b782e2d03a9fbe157d470d",
+    "studyArea": {
+        "coordinates": [
+            {
+                "lon": -0.2,
+                "lat": 51.46
+            },
+            {
+                "lon": -0.06,
+                "lat": 51.46
+            },
+            {
+                "lon": -0.06,
+                "lat": 51.55
+            },
+            {
+                "lon": -0.2,
+                "lat": 51.55
+            }
+        ]
+    },
+    "guidanceStrength": 0.08,
+    "sweep": [
+        {
+            "radialCap": 0,
+            "orbitalCap": 0,
+            "distributorCap": 0,
+            "coverage": 0.32904122031275396,
+            "costEstimate": 1.4516564942597332E10,
+            "lineCount": 1,
+            "transferOverhead": 0.0,
+            "duplication": 0.0
+        },
+        {
+            "radialCap": 1,
+            "orbitalCap": 1,
+            "distributorCap": 1,
+            "coverage": 0.3000444860341266,
+            "costEstimate": 1.1614280110583216E10,
+            "lineCount": 1,
+            "transferOverhead": 0.0,
+            "duplication": 0.0
+        },
+        {
+            "radialCap": 2,
+            "orbitalCap": 2,
+            "distributorCap": 2,
+            "coverage": 0.7261570680182048,
+            "costEstimate": 5.48906946239839E10,
+            "lineCount": 5,
+            "transferOverhead": 0.6666666666666667,
+            "duplication": 0.046511627906976744
+        },
+        {
+            "radialCap": 3,
+            "orbitalCap": 3,
+            "distributorCap": 3,
+            "coverage": 0.7372832567777147,
+            "costEstimate": 5.335674024733745E10,
+            "lineCount": 6,
+            "transferOverhead": 0.7027027027027026,
+            "duplication": 0.023809523809523808
+        },
+        {
+            "radialCap": 4,
+            "orbitalCap": 4,
+            "distributorCap": 4,
+            "coverage": 0.7852196136738572,
+            "costEstimate": 6.872133518064577E10,
+            "lineCount": 8,
+            "transferOverhead": 0.5714285714285714,
+            "duplication": 0.037037037037037035
+        },
+        {
+            "radialCap": 5,
+            "orbitalCap": 5,
+            "distributorCap": 5,
+            "coverage": 0.8150395390000622,
+            "costEstimate": 7.569434229192459E10,
+            "lineCount": 9,
+            "transferOverhead": 0.5227272727272727,
+            "duplication": 0.05084745762711865
+        }
+    ],
+    "chosenParetoKnee": {
+        "radialCap": 3,
+        "orbitalCap": 3,
+        "distributorCap": 3,
+        "coverage": 0.7372832567777147,
+        "costEstimate": 5.335674024733745E10,
+        "lineCount": 6,
+        "transferOverhead": 0.7027027027027026,
+        "duplication": 0.023809523809523808
+    },
+    "note": "Preview sweep on one medium London polygon; caps are guidance, not a research constant."
+}
